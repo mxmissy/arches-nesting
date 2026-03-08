@@ -4486,7 +4486,39 @@ async function executeUndo(all) {
     }
   }
 
-  // Step 3 — Reset Delivery Nesting Status back to Pending Assignment
+  // Step 3 — Restore orphaned unassigned parts (parts that were in the delivery
+  // but didn't fit on any beam — their Pending Delivery was cleared by confirm)
+  for (let deliveryId of deliveriesToReset) {
+    try {
+      let delivery = DATA.deliveries.find(d => d.id === deliveryId);
+      if (delivery && delivery.parts.length > 0) {
+        // Collect IDs of parts we already restored in Step 1
+        let alreadyRestored = new Set();
+        for (let s of toUndo) {
+          if (s.assignedParts) {
+            for (let p of s.assignedParts) alreadyRestored.add(p.id);
+          }
+        }
+        // For each part originally in the delivery, restore if not already handled
+        for (let partId of delivery.parts) {
+          if (alreadyRestored.has(partId)) continue;
+          try {
+            await airtableUpdate('Parts', partId, {
+              'Material Ordered': false,
+              'Pending Delivery': [deliveryId],
+            });
+            console.log(`[UNDO] Restored orphaned part ${partId} to delivery`);
+          } catch(e3) {
+            console.warn(`Could not restore orphaned part ${partId}:`, e3.message);
+          }
+        }
+      }
+    } catch(e) {
+      console.warn(`Orphan restore failed for delivery ${deliveryId}:`, e.message);
+    }
+  }
+
+  // Step 4 — Reset Delivery Nesting Status back to Pending Assignment
   for (let deliveryId of deliveriesToReset) {
     try {
       await airtableUpdate('Deliveries', deliveryId, {
