@@ -1026,7 +1026,8 @@ async function loadData() {
       cutInches: cutLengthToInches(r.fields['Cut Length']),
       stockMaterial: r.fields['Stock Material'] || [],
       materialOrdered: r.fields['Material Ordered'] || false,
-      job: r.fields['Job Number'] || '',
+      job: Array.isArray(r.fields['Job Number']) ? (r.fields['Job Number'][0]?.name || '') : (r.fields['Job Number'] || ''),
+      jobId: Array.isArray(r.fields['Job Number']) ? (r.fields['Job Number'][0]?.id || null) : null,
       materialType: r.fields['Material Type'] || null,
       materialSize: r.fields['Material Size'] || '',
       pendingDelivery: Array.isArray(r.fields['Pending Delivery']) ? r.fields['Pending Delivery'] : (r.fields['Pending Delivery'] ? [r.fields['Pending Delivery']] : []),
@@ -2098,6 +2099,7 @@ async function markPartsForPO() {
       };
       if (samplePart.materialType) createFields['Material Type'] = samplePart.materialType;
       if (samplePart.materialSize) createFields['Material Size'] = samplePart.materialSize;
+      if (samplePart.jobId) createFields['Job'] = [{ id: samplePart.jobId }];
 
       console.log('[PO] Creating stock:', JSON.stringify(createFields));
       console.log('[PO] Sample part data:', {
@@ -3464,6 +3466,8 @@ async function spCreatePO() {
       // Add parsed material type/size if available
       if (parsed.type) createFields['Material Type'] = parsed.type;
       if (parsed.size) createFields['Material Size'] = parsed.size;
+      let spSamplePart = sp.parts && sp.parts[0];
+      if (spSamplePart && spSamplePart.jobId) createFields['Job'] = [{ id: spSamplePart.jobId }];
 
       console.log('[SP-PO] Creating stock:', JSON.stringify(createFields));
 
