@@ -4381,14 +4381,21 @@ function renderUndo(el) {
 
   window._undoSelected = new Set();
 
-  let rows = nested.map((s, i) => `
+  let rows = nested.map((s, i) => {
+    let isDelivery = s.delivery && s.delivery.length > 0;
+    let typeLabel = isDelivery
+      ? `<span style="color:var(--clr-stock);font-size:0.72rem;font-weight:600;background:var(--clr-stock-light);padding:2px 6px;border-radius:4px">📦 DELIVERY</span>`
+      : `<span style="color:var(--clr-text-secondary);font-size:0.72rem">Regular</span>`;
+    return `
     <tr class="check-row" onclick="toggleUndo(${i})">
       <td><div class="custom-check" id="undo-check-${i}"></div></td>
       <td class="mono" style="font-weight:600">${escHtml(s.tag)}</td>
       <td>${escHtml(s.materialSize)}</td>
       <td class="text-right mono">${s.assignedParts.length}</td>
-      <td class="text-xs mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${escHtml(s.sawInstructions)}</td>
-    </tr>`).join('');
+      <td>${typeLabel}</td>
+      <td class="text-xs mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${escHtml(s.sawInstructions)}</td>
+    </tr>`;
+  }).join('');
 
   el.innerHTML = `
     <div class="card">
@@ -4399,10 +4406,11 @@ function renderUndo(el) {
       <div class="card-body" style="padding:0">
         <table class="data-table"><thead><tr>
           <th style="width:32px">☑</th><th>Stock Tag</th><th>Material</th>
-          <th class="text-right">Parts</th><th>Saw Instructions</th>
+          <th class="text-right">Parts</th><th>Type</th><th>Saw Instructions</th>
         </tr></thead><tbody>${rows}</tbody></table>
       </div>
     </div>
+    <p class="text-muted text-xs" style="margin:8px 0">Delivery nests will restore Pending Delivery on parts and reset the delivery status to Pending Assignment.</p>
     <div class="flex gap-3">
       <button class="btn btn-danger" onclick="executeUndo(false)">↩️ Undo Selected</button>
       <button class="btn btn-danger" onclick="executeUndo(true)">↩️ Undo ALL</button>
@@ -4430,32 +4438,69 @@ async function executeUndo(all) {
   let toUndo = all ? stock : [...window._undoSelected].map(i => stock[i]);
   if (toUndo.length === 0) { toast('Select stock to undo', 'warning'); return; }
 
+  let deliveriesToReset = new Set();
+
   for (let s of toUndo) {
+    let isDelivery = s.delivery && s.delivery.length > 0;
+    let deliveryId = isDelivery ? s.delivery[0] : null;
+
     try {
-      // Unlink each assigned part (from Parts side)
+      // Step 1 — Reset each assigned part
       if (s.assignedParts && s.assignedParts.length > 0) {
         for (let partLink of s.assignedParts) {
           try {
-            await airtableUpdate('Parts', partLink.id, {
-              'Stock Material': []
-            });
+            let partUpdate = {
+              'Stock Material': [],
+              'Material Ordered': false,
+            };
+            // Restore Pending Delivery link if this was a delivery nest
+            if (deliveryId) {
+              partUpdate['Pending Delivery'] = [deliveryId];
+            }
+            await airtableUpdate('Parts', partLink.id, partUpdate);
           } catch(e2) {
-            // Part may already be unlinked, continue
+            console.warn(`Could not reset part ${partLink.id}:`, e2.message);
           }
         }
       }
-      // Clear saw instructions on stock
-      await airtableUpdate('Stock Material', s.id, {
-        'Saw Instructions': ''
-      });
+
+      // Step 2 — Clear the Stock Material record
+      let stockUpdate = {
+        'Saw Instructions': '',
+        'Assigned Parts': [],
+      };
+      if (deliveryId) {
+        // Keep the Delivery link on the stock — it still belongs to that delivery
+        // Just clear the nesting assignments
+      }
+      await airtableUpdate('Stock Material', s.id, stockUpdate);
+
+      // Track which deliveries need status reset
+      if (deliveryId) {
+        deliveriesToReset.add(deliveryId);
+      }
+
       toast(`↩️ ${s.tag} — cleared`);
     } catch(e) {
       toast(`Error on ${s.tag}: ${e.message}`, 'error');
     }
   }
 
-  toast('Undo complete. Auto-created remnants must be deleted manually.');
+  // Step 3 — Reset Delivery Nesting Status back to Pending Assignment
+  for (let deliveryId of deliveriesToReset) {
+    try {
+      await airtableUpdate('Deliveries', deliveryId, {
+        'Nesting Status': 'Pending Assignment'
+      });
+      toast(`📦 Delivery reset to Pending Assignment`);
+    } catch(e) {
+      console.warn(`Could not reset delivery ${deliveryId}:`, e.message);
+    }
+  }
+
+  toast('Undo complete ✅');
   await loadData();
+  renderUndo(document.getElementById('page-content'));
 }
 
 // ============================================================
