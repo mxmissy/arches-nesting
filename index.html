@@ -4706,6 +4706,14 @@ function renderDeliveryMode(el) {
   let deliveryStockIds = new Set(selected.stockMaterial); // strings, not objects
   let deliveryStock = DATA.stock.filter(s => deliveryStockIds.has(s.id));
 
+  // A beam is already nested if it has saw instructions with cuts AND assigned parts
+  function isBeamNested(s) {
+    return s.sawInstructions && s.sawInstructions.includes('CF:') &&
+           s.assignedParts && s.assignedParts.length > 0;
+  }
+  let availableStock = deliveryStock.filter(s => !isBeamNested(s));
+  let nestedStock = deliveryStock.filter(s => isBeamNested(s));
+
   // Manual job pull: unmatched parts from a user-selected job number
   let manualJob = DELIVERY_STATE.manualJobNumber || '';
   let manualJobParts = [];
@@ -4730,7 +4738,6 @@ function renderDeliveryMode(el) {
       .filter(Boolean)
   )].sort((a, b) => Number(b) - Number(a));
 
-  let beamsRemaining = deliveryStock.filter(s => s.status !== 'In Use').length;
   let summaryHtml = `
     <div class="stat-cards">
       <div class="stat-card accent">
@@ -4738,7 +4745,7 @@ function renderDeliveryMode(el) {
         <div class="stat-card-label">Parts to Assign</div>
       </div>
       <div class="stat-card blue">
-        <div class="stat-card-value">${beamsRemaining} <span style="font-size:14px;font-weight:400">/ ${deliveryStock.length}</span></div>
+        <div class="stat-card-value">${availableStock.length} <span style="font-size:14px;font-weight:400">/ ${deliveryStock.length}</span></div>
         <div class="stat-card-label">Beams Remaining</div>
       </div>
       <div class="stat-card" style="background:#F0FDF4">
@@ -4753,11 +4760,11 @@ function renderDeliveryMode(el) {
     : `<table class="data-table">
         <thead><tr><th>Stock Tag</th><th>Material</th><th>Size</th><th>Length</th><th>Status</th></tr></thead>
         <tbody>${deliveryStock.map(s => {
-          let isInUse = s.status === 'In Use';
-          let statusLabel = isInUse ? 'IN USE' : 'INCOMING';
-          let statusColor = isInUse ? '#16A34A' : '#1565C0';
-          let statusBg = isInUse ? '#F0FDF4' : '#E3F2FD';
-          return `<tr>
+          let nested = isBeamNested(s);
+          let statusLabel = nested ? 'IN FABRICATION' : 'INCOMING';
+          let statusColor = nested ? '#16A34A' : '#1565C0';
+          let statusBg = nested ? '#F0FDF4' : '#E3F2FD';
+          return `<tr style="opacity:${nested ? '0.6' : '1'}">
             <td class="mono" style="font-weight:600">${escHtml(s.tag)}</td>
             <td>${escHtml(s.materialType?.name || s.materialType || '')}</td>
             <td class="mono">${escHtml(s.materialSize)}</td>
@@ -4818,7 +4825,7 @@ function renderDeliveryMode(el) {
       </table>`;
 
   // Auto-nest button only if both parts and stock exist
-  let nestBtnHtml = (deliveryParts.length > 0 && deliveryStock.length > 0)
+  let nestBtnHtml = (deliveryParts.length > 0 && availableStock.length > 0)
     ? `<button class="btn btn-primary btn-lg" onclick="runDeliveryNest()">🪚 Auto-Nest Delivery Parts</button>`
     : `<button class="btn btn-lg" disabled title="Need both parts and beams to nest">🪚 Auto-Nest (waiting for data)</button>`;
 
@@ -4871,7 +4878,11 @@ async function runDeliveryNest() {
   let deliveryParts = [...linkedDeliveryParts, ...manualJobParts];
 
   let deliveryStockIds = new Set(selected.stockMaterial);
-  let deliveryStock = DATA.stock.filter(s => deliveryStockIds.has(s.id));
+  // Only nest against beams that haven't already been assigned
+  let deliveryStock = DATA.stock.filter(s =>
+    deliveryStockIds.has(s.id) &&
+    !(s.sawInstructions && s.sawInstructions.includes('CF:') && s.assignedParts && s.assignedParts.length > 0)
+  );
 
   if (deliveryParts.length === 0 || deliveryStock.length === 0) {
     toast('Need both parts and beams to nest', 'warning');
@@ -5025,7 +5036,7 @@ async function confirmDeliveryNest() {
         try {
           await airtableUpdate('Stock Material', sp.record.id, {
             'Saw Instructions': sawInstruction,
-            'Status': { name: 'In Use' }
+            'Status': { name: 'In Fabrication' }
           });
         } catch(e) {
           toast(`⚠️ Saw instructions on ${sp.id}: ${e.message}`, 'warning');
