@@ -1549,42 +1549,100 @@ function renderPage(page) {
 // DASHBOARD
 // ============================================================
 function renderDashboard(el) {
+  let allParts = DATA.parts;
   let unmatched = getUnmatchedParts();
   let avail = getAvailableStock();
-  let remnants = DATA.remnants;
-  let groups = getSizeKeyGroups(unmatched);
-  let sizeKeys = Object.keys(groups).sort();
+  let remnants = DATA.remnants.filter(r => r.status === 'Available');
 
-  let tableRows = sizeKeys.map(key => {
-    let pts = groups[key];
-    let stockCount = avail.filter(s => {
-      let a = (s.sizeKey||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
-      let b = (key||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
-      return a === b;
-    }).length;
-    let remCount = remnants.filter(r => {
-      let a = (r.materialSize||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
-      let b = (key||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
-      return a === b;
-    }).length;
-    let ratio = stockCount > 0 ? Math.min(pts.length / stockCount, 5) : 5;
-    let barW = Math.min(ratio / 5 * 100, 100);
-    let barColor = stockCount === 0 ? 'var(--clr-scrap)' : stockCount >= pts.length ? 'var(--clr-remnant)' : 'var(--clr-part)';
-    return `<tr>
-      <td class="mono" style="font-weight:600">${escHtml(key)}</td>
-      <td style="text-align:center" class="mono">${pts.length}</td>
-      <td style="text-align:center" class="mono">${stockCount}</td>
-      <td style="text-align:center" class="mono">${remCount}</td>
-      <td style="text-align:center"><div style="width:80px;height:6px;background:#E5E7EB;border-radius:3px;overflow:hidden;display:inline-block">
-        <div style="width:${barW}%;height:100%;background:${barColor};border-radius:3px"></div>
-      </div></td>
-    </tr>`;
+  // Build per-job summary
+  let jobNums = [...new Set(allParts.map(p => p.job).filter(Boolean))].sort((a,b) => Number(a)-Number(b));
+
+  function normSK(s) { return (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,''); }
+
+  let totalUnmatched = unmatched.length;
+  let totalAssigned = allParts.length - totalUnmatched;
+
+  let jobCards = jobNums.map(job => {
+    let jobParts   = allParts.filter(p => p.job === job);
+    let assigned   = jobParts.filter(p => p.stockMaterial && p.stockMaterial.length > 0);
+    let needed     = jobParts.filter(p => !p.stockMaterial || p.stockMaterial.length === 0);
+    let pct        = jobParts.length ? Math.round(assigned.length / jobParts.length * 100) : 0;
+    let sizesNeeded = [...new Set(needed.map(p => p.sizeKey))];
+    let sizesWithStock = sizesNeeded.filter(sk =>
+      avail.some(s => normSK(s.sizeKey) === normSK(sk)) ||
+      remnants.some(r => normSK(r.materialSize) === normSK(sk))
+    );
+
+    let statusLabel, statusColor, statusBg;
+    if (needed.length === 0) {
+      statusLabel = '✅ All Assigned'; statusColor = '#16A34A'; statusBg = '#F0FDF4';
+    } else if (sizesWithStock.length === 0) {
+      statusLabel = '🔴 Needs Order'; statusColor = '#DC2626'; statusBg = '#FEF2F2';
+    } else if (sizesWithStock.length < sizesNeeded.length) {
+      statusLabel = '🟡 Partial Stock'; statusColor = '#D97706'; statusBg = '#FFFBEB';
+    } else {
+      statusLabel = '🟢 Ready to Nest'; statusColor = '#16A34A'; statusBg = '#F0FDF4';
+    }
+
+    // Size breakdown rows for this job
+    let sizeRows = sizesNeeded.map(sk => {
+      let skParts = needed.filter(p => p.sizeKey === sk);
+      let stockCt = avail.filter(s => normSK(s.sizeKey) === normSK(sk)).length;
+      let remCt   = remnants.filter(r => normSK(r.materialSize) === normSK(sk)).length;
+      let hasMat  = stockCt > 0 || remCt > 0;
+      return `<tr style="font-size:13px">
+        <td class="mono" style="padding:4px 8px;color:${hasMat ? 'inherit' : '#DC2626'}">${escHtml(sk)}</td>
+        <td class="mono" style="padding:4px 8px;text-align:center">${skParts.length}</td>
+        <td class="mono" style="padding:4px 8px;text-align:center;color:${stockCt>0?'#1565C0':'#9CA3AF'}">${stockCt}</td>
+        <td class="mono" style="padding:4px 8px;text-align:center;color:${remCt>0?'#16A34A':'#9CA3AF'}">${remCt}</td>
+      </tr>`;
+    }).join('');
+
+    let nestBtn = needed.length > 0 && sizesWithStock.length > 0
+      ? `<button class="btn btn-primary btn-sm" onclick="nestJob('${job}')" style="margin-top:12px">🪚 Nest Job ${job}</button>`
+      : needed.length > 0
+        ? `<button class="btn btn-sm" disabled style="margin-top:12px;opacity:0.5">No Stock Available</button>`
+        : '';
+
+    return `<div class="card" style="margin-bottom:16px">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:17px;font-weight:700">Job ${escHtml(job)}</span>
+        <span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:12px;background:${statusBg};color:${statusColor}">${statusLabel}</span>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;gap:24px;margin-bottom:10px;flex-wrap:wrap">
+          <div>
+            <div style="font-size:22px;font-weight:700;color:var(--clr-text)">${assigned.length}<span style="font-size:14px;font-weight:400;color:#6B7280"> / ${jobParts.length} parts assigned</span></div>
+            <div style="height:6px;background:#E5E7EB;border-radius:3px;margin-top:4px;width:200px">
+              <div style="width:${pct}%;height:100%;background:#16A34A;border-radius:3px;transition:width 0.3s"></div>
+            </div>
+          </div>
+          <div style="color:#6B7280;font-size:13px;padding-top:4px">
+            ${needed.length > 0 ? `<b style="color:var(--clr-text)">${needed.length}</b> parts need stock &nbsp;·&nbsp; <b style="color:${sizesWithStock.length===sizesNeeded.length?'#16A34A':'#D97706'}">${sizesWithStock.length}/${sizesNeeded.length}</b> sizes have material` : '<b style="color:#16A34A">Nothing left to assign</b>'}
+          </div>
+        </div>
+        ${needed.length > 0 ? `
+        <details>
+          <summary style="cursor:pointer;font-size:13px;color:#6B7280;user-select:none">▶ Show size breakdown</summary>
+          <table class="data-table" style="margin-top:8px">
+            <thead><tr>
+              <th style="font-size:12px">Size</th>
+              <th style="font-size:12px;text-align:center">Parts</th>
+              <th style="font-size:12px;text-align:center">Stock</th>
+              <th style="font-size:12px;text-align:center">Remnants</th>
+            </tr></thead>
+            <tbody>${sizeRows}</tbody>
+          </table>
+        </details>` : ''}
+        ${nestBtn}
+      </div>
+    </div>`;
   }).join('');
 
   el.innerHTML = `
     <div class="stat-cards">
       <div class="stat-card accent">
-        <div class="stat-card-value">${unmatched.length}</div>
+        <div class="stat-card-value">${totalUnmatched}</div>
         <div class="stat-card-label">Parts Need Assignment</div>
       </div>
       <div class="stat-card blue">
@@ -1597,25 +1655,20 @@ function renderDashboard(el) {
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">Size Key Breakdown</div>
-      <div class="card-body" style="padding:0; overflow-x:auto">
-        ${sizeKeys.length === 0 ? '<div class="empty-state"><div class="icon">✅</div>All parts assigned!</div>' : `
-        <table class="data-table">
-          <thead><tr>
-            <th>Size Key</th><th style="text-align:center">Parts</th>
-            <th style="text-align:center">Stock</th><th style="text-align:center">Remnants</th><th style="text-align:center">Demand</th>
-          </tr></thead>
-          <tbody>${tableRows}</tbody>
-        </table>`}
-      </div>
-    </div>
+    ${jobNums.length === 0
+      ? '<div class="empty-state"><div class="icon">✅</div><p>All parts assigned!</p></div>'
+      : jobCards}
 
-    <div class="flex gap-3">
-      <button class="btn btn-primary btn-lg" onclick="navigateTo('autonest')">🪚 Start Auto Nest</button>
+    <div class="flex gap-3" style="margin-top:8px">
+      <button class="btn btn-primary btn-lg" onclick="navigateTo('autonest')">🪚 Auto Nest All Jobs</button>
       <button class="btn btn-lg" onclick="navigateTo('beam')">📐 I Have a Beam</button>
       <button class="btn btn-lg" onclick="navigateTo('cuts')">📋 I Have Cuts</button>
     </div>`;
+}
+
+function nestJob(job) {
+  window._nestJobFilter = job;
+  navigateTo('autonest');
 }
 
 // ============================================================
@@ -1626,12 +1679,13 @@ function renderAutoNest(el) {
   if (window._showNestSuccess) {
     let cp = window._lastConfirmedPieces || [];
     let info = window._nestSuccessInfo || {};
+    let job = window._nestJobFilter || '';
     window._showNestSuccess = false;
     el.innerHTML = `
       <div class="card" style="margin-top:16px">
         <div class="card-body" style="text-align:center;padding:32px">
           <div style="font-size:48px;margin-bottom:12px">✅</div>
-          <h3 style="margin-bottom:8px">${info.totalLinked || 0} parts linked across ${cp.length} stick${cp.length !== 1 ? 's' : ''}</h3>
+          <h3 style="margin-bottom:8px">${info.totalLinked || 0} parts linked across ${cp.length} stick${cp.length !== 1 ? 's' : ''}${job ? ' — Job ' + escHtml(job) : ''}</h3>
           <p class="text-muted" style="margin-bottom:16px">${info.totalRemnants > 0 ? info.totalRemnants + ' remnant(s) created' : 'No remnants created'}</p>
           <button class="btn btn-primary btn-lg" onclick="printCutSheets(window._lastConfirmedPieces)">🖨️ Print Cut Sheets (${cp.length})</button>
           <button class="btn btn-lg" onclick="navigateTo('cutqueue')" style="margin-left:8px">📄 View Cut Queue</button>
@@ -1642,36 +1696,77 @@ function renderAutoNest(el) {
     return;
   }
 
-  let unmatched = getUnmatchedParts();
+  let allUnmatched = getUnmatchedParts();
   let avail = getAvailableStock();
+
+  // Job filter
+  let allJobs = [...new Set(allUnmatched.map(p => p.job).filter(Boolean))].sort((a,b)=>Number(a)-Number(b));
+  let selectedJob = window._nestJobFilter || '';
+  // If the stored job no longer has unmatched parts, clear it
+  if (selectedJob && !allJobs.includes(selectedJob)) { selectedJob = ''; window._nestJobFilter = ''; }
+
+  let unmatched = selectedJob ? allUnmatched.filter(p => p.job === selectedJob) : allUnmatched;
   let groups = getSizeKeyGroups(unmatched);
   let sizeKeys = Object.keys(groups).sort();
 
-  if (unmatched.length === 0) {
+  if (allUnmatched.length === 0) {
     el.innerHTML = `<div class="empty-state"><div class="icon">✅</div>
       <p>All parts have stock assigned. Nothing to nest.</p>
       <button class="btn mt-4" onclick="navigateTo('dashboard')">← Dashboard</button></div>`;
     return;
   }
 
+  let jobOptions = `<option value="">All Jobs (${allUnmatched.length} parts)</option>` +
+    allJobs.map(j => {
+      let ct = allUnmatched.filter(p => p.job === j).length;
+      return `<option value="${escHtml(j)}" ${selectedJob===j?'selected':''}>${escHtml(j)} — ${ct} part${ct!==1?'s':''}</option>`;
+    }).join('');
+
   let scopeRows = sizeKeys.map(key => {
     let pts = groups[key];
     let stk = avail.filter(s => (s.sizeKey||'').toUpperCase().replace(/[^A-Z0-9./]/g,'') === key.toUpperCase().replace(/[^A-Z0-9./]/g,'')).length;
     let rem = DATA.remnants.filter(r => (r.materialSize||'').toUpperCase().replace(/[^A-Z0-9./]/g,'') === key.toUpperCase().replace(/[^A-Z0-9./]/g,'')).length;
-    return `<tr><td class="mono" style="font-weight:600">${escHtml(key)}</td>
+    let hasMat = stk > 0 || rem > 0;
+    return `<tr>
+      <td class="mono" style="font-weight:600;color:${hasMat?'inherit':'#DC2626'}">${escHtml(key)}</td>
       <td style="text-align:center" class="mono">${pts.length}</td>
-      <td style="text-align:center" class="mono">${stk}</td>
-      <td style="text-align:center" class="mono">${rem}</td></tr>`;
+      <td style="text-align:center" class="mono;color:${stk>0?'#1565C0':'#9CA3AF'}">${stk}</td>
+      <td style="text-align:center" class="mono">${rem}</td>
+    </tr>`;
   }).join('');
+
+  let noStockCount = sizeKeys.filter(key => {
+    let stk = avail.filter(s => (s.sizeKey||'').toUpperCase().replace(/[^A-Z0-9./]/g,'') === key.toUpperCase().replace(/[^A-Z0-9./]/g,'')).length;
+    let rem = DATA.remnants.filter(r => (r.materialSize||'').toUpperCase().replace(/[^A-Z0-9./]/g,'') === key.toUpperCase().replace(/[^A-Z0-9./]/g,'')).length;
+    return stk === 0 && rem === 0;
+  }).length;
 
   el.innerHTML = `
     <div class="card">
-      <div class="card-header">Scope Summary</div>
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <span>🪚 Auto Nest</span>
+        <button class="btn btn-sm" onclick="navigateTo('dashboard')" style="font-size:12px">← Jobs</button>
+      </div>
+      <div class="card-body">
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label" style="font-weight:600">Nest which job?</label>
+          <select class="form-select" id="nest-job-select" onchange="window._nestJobFilter=this.value;renderAutoNest(document.getElementById('content'))" style="max-width:320px;font-size:15px;font-weight:600">
+            ${jobOptions}
+          </select>
+          ${selectedJob ? `<div style="margin-top:6px;font-size:12px;color:#6B7280">${unmatched.length} parts scoped · ${noStockCount > 0 ? '<span style=\'color:#DC2626\'>' + noStockCount + ' size(s) have no stock — will skip</span>' : '<span style=\'color:#16A34A\'>All sizes have material</span>'}</div>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">Parts in Scope</div>
       <div class="card-body" style="padding:0">
-        <table class="data-table"><thead><tr>
-          <th>Size Key</th><th style="text-align:center">Parts</th>
-          <th style="text-align:center">Stock</th><th style="text-align:center">Remnants</th>
-        </tr></thead><tbody>${scopeRows}</tbody></table>
+        ${sizeKeys.length === 0
+          ? '<div style="padding:16px;color:#6B7280;font-size:13px">Select a job above to see scope</div>'
+          : `<table class="data-table"><thead><tr>
+              <th>Size</th><th style="text-align:center">Parts</th>
+              <th style="text-align:center">Stock</th><th style="text-align:center">Remnants</th>
+            </tr></thead><tbody>${scopeRows}</tbody></table>`}
       </div>
     </div>
 
@@ -1699,8 +1794,8 @@ function renderAutoNest(el) {
       </div>
     </div>
 
-    <button class="btn btn-primary btn-lg" id="btn-run-nest" onclick="executeAutoNest()">
-      🪚 Run Optimization
+    <button class="btn btn-primary btn-lg" id="btn-run-nest" onclick="executeAutoNest()" ${unmatched.length===0?'disabled':''}>
+      🪚 Run Optimization${selectedJob ? ' — Job ' + escHtml(selectedJob) : ' — All Jobs'}
     </button>
     <div id="autonest-results" class="mt-4"></div>`;
 }
@@ -1716,7 +1811,9 @@ async function executeAutoNest() {
   SETTINGS.safetyMargin = parseFloat(document.getElementById('nest-safety').value) || 1.0;
   SETTINGS.minRemnant = parseFloat(document.getElementById('nest-minrem').value) || 48;
 
-  let unmatched = getUnmatchedParts();
+  let allUnmatched = getUnmatchedParts();
+  let selectedJob = window._nestJobFilter || '';
+  let unmatched = selectedJob ? allUnmatched.filter(p => p.job === selectedJob) : allUnmatched;
   let avail = getAvailableStock();
   let groups = getSizeKeyGroups(unmatched);
   let resultsEl = document.getElementById('autonest-results');
