@@ -1026,7 +1026,7 @@ async function loadData() {
       cutInches: cutLengthToInches(r.fields['Cut Length']),
       stockMaterial: r.fields['Stock Material'] || [],
       materialOrdered: r.fields['Material Ordered'] || false,
-      job: r.fields['Job Number'] || '',
+      job: (() => { let j = r.fields['Job Number']; if (!j) return ''; if (Array.isArray(j)) { let f = j[0]; return f ? (typeof f==='object' ? String(f.name||'') : String(f)) : ''; } if (typeof j==='object') return String(j.name||''); return String(j); })(),
       materialType: r.fields['Material Type'] || null,
       materialSize: r.fields['Material Size'] || '',
       pendingDelivery: Array.isArray(r.fields['Pending Delivery']) ? r.fields['Pending Delivery'] : (r.fields['Pending Delivery'] ? [r.fields['Pending Delivery']] : []),
@@ -4677,11 +4677,7 @@ function renderDeliveryMode(el) {
   let deliveryParts = [...linkedDeliveryParts, ...manualJobParts];
 
   // All unique job numbers from unmatched parts (for the job picker)
-  // Normalize: Job Number may be an array (linked record) or a string
-  function normalizeJob(j) {
-    if (Array.isArray(j)) return j[0] || '';
-    return j || '';
-  }
+  function normalizeJob(j) { return String(j || ''); }
   let allUnmatchedJobs = [...new Set(
     DATA.parts
       .filter(p => !p.stockMaterial || p.stockMaterial.length === 0)
@@ -4689,7 +4685,7 @@ function renderDeliveryMode(el) {
       .filter(Boolean)
   )].sort((a, b) => Number(b) - Number(a));
 
-  // Summary cards
+  let beamsRemaining = deliveryStock.filter(s => !s.status || s.status === 'Ordered' || s.status === 'INCOMING').length;
   let summaryHtml = `
     <div class="stat-cards">
       <div class="stat-card accent">
@@ -4697,8 +4693,8 @@ function renderDeliveryMode(el) {
         <div class="stat-card-label">Parts to Assign</div>
       </div>
       <div class="stat-card blue">
-        <div class="stat-card-value">${deliveryStock.length}</div>
-        <div class="stat-card-label">Incoming Beams</div>
+        <div class="stat-card-value">${beamsRemaining} <span style="font-size:14px;font-weight:400">/ ${deliveryStock.length}</span></div>
+        <div class="stat-card-label">Beams Remaining</div>
       </div>
       <div class="stat-card" style="background:#F0FDF4">
         <div class="stat-card-value" style="color:#16A34A">${escHtml(selected.poNumber || '—')}</div>
@@ -4711,13 +4707,18 @@ function renderDeliveryMode(el) {
     ? `<div class="empty-state"><div class="icon">📦</div><p>No beams linked to this delivery yet.<br>Link STK records to this delivery in Airtable first.</p></div>`
     : `<table class="data-table">
         <thead><tr><th>Stock Tag</th><th>Material</th><th>Size</th><th>Length</th><th>Status</th></tr></thead>
-        <tbody>${deliveryStock.map(s => `<tr>
-          <td class="mono" style="font-weight:600">${escHtml(s.tag)}</td>
-          <td>${escHtml(s.materialType?.name || s.materialType || '')}</td>
-          <td class="mono">${escHtml(s.materialSize)}</td>
-          <td class="mono">${s.lengthFt} ft</td>
-          <td><span class="tag tag-order">INCOMING</span></td>
-        </tr>`).join('')}</tbody>
+        <tbody>${deliveryStock.map(s => {
+          let statusLabel = s.status || 'INCOMING';
+          let statusColor = statusLabel === 'In Use' ? '#16A34A' : statusLabel === 'Assigned' ? '#2196F3' : '#1565C0';
+          let statusBg = statusLabel === 'In Use' ? '#F0FDF4' : statusLabel === 'Assigned' ? '#E3F2FD' : '#E3F2FD';
+          return `<tr>
+            <td class="mono" style="font-weight:600">${escHtml(s.tag)}</td>
+            <td>${escHtml(s.materialType?.name || s.materialType || '')}</td>
+            <td class="mono">${escHtml(s.materialSize)}</td>
+            <td class="mono">${s.lengthFt} ft</td>
+            <td><span class="tag" style="background:${statusBg};color:${statusColor};font-size:11px;font-weight:700">${escHtml(statusLabel.toUpperCase())}</span></td>
+          </tr>`;
+        }).join('')}</tbody>
       </table>`;
 
   // Job picker card — shown when no linked parts exist, or always as an optional override
@@ -4815,7 +4816,7 @@ async function runDeliveryNest() {
   if (manualJob) {
     let linkedIds = new Set(linkedDeliveryParts.map(p => p.id));
     manualJobParts = DATA.parts.filter(p =>
-      (Array.isArray(p.job) ? p.job[0] : p.job) === manualJob &&
+      p.job === manualJob &&
       (!p.stockMaterial || p.stockMaterial.length === 0) &&
       p.cutInches > 0 &&
       !linkedIds.has(p.id)
@@ -4974,10 +4975,11 @@ async function confirmDeliveryNest() {
         totalLinked += linkedCount;
         totalSticks++;
 
-        // Update saw instructions (non-critical)
+        // Update saw instructions and status (non-critical)
         try {
           await airtableUpdate('Stock Material', sp.record.id, {
-            'Saw Instructions': sawInstruction
+            'Saw Instructions': sawInstruction,
+            'Status': { name: 'In Use' }
           });
         } catch(e) {
           toast(`⚠️ Saw instructions on ${sp.id}: ${e.message}`, 'warning');
