@@ -1475,7 +1475,8 @@ function renderBarDiagram(stockPiece) {
   let utilPct = Math.round(((total - drop) / total) * 100);
   let utilColor = utilPct >= 90 ? 'var(--clr-remnant)' : utilPct >= 70 ? 'var(--clr-part)' : 'var(--clr-scrap)';
   let tagCls = sp.type === 'remnant' ? 'tag-remnant' : sp.type === 'virtual' ? 'tag-order' : 'tag-yard';
-  let tagLabel = sp.type === 'remnant' ? '♻️ REMNANT' : sp.type === 'virtual' ? '📦 ORDER' : 'YARD';
+  let stockStatus = sp.record && sp.record.status ? sp.record.status.toUpperCase() : 'IN STOCK';
+  let tagLabel = sp.type === 'remnant' ? '♻️ REMNANT' : sp.type === 'virtual' ? '📦 ORDER' : stockStatus;
 
   return `
     <div class="bar-diagram">
@@ -2014,7 +2015,7 @@ async function executeAutoNest() {
       <div style="display:flex;gap:24px;flex-wrap:wrap;justify-content:center;align-items:center">
         ${hasPhase1 ? `<div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:20px">✅</span>
-          <div><strong>${totalP1Parts}</strong> parts → <strong>${totalP1Sticks}</strong> stock in yard</div>
+          <div><strong>${totalP1Parts}</strong> parts → <strong>${totalP1Sticks}</strong> existing stock assigned</div>
         </div>` : ''}
         ${hasPhase2 ? `<div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:20px">📦</span>
