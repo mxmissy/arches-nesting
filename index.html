@@ -449,81 +449,6 @@ body {
   min-width: 1px;
   max-width: 3px;
 }
-/* Cross-job fill segment */
-.bar-segment.cross-fill {
-  background: #F97316;
-  background-image: repeating-linear-gradient(
-    -45deg, transparent, transparent 5px,
-    rgba(0,0,0,0.12) 5px, rgba(0,0,0,0.12) 10px
-  );
-  color: #fff;
-}
-.seg-job-badge {
-  display: inline-block;
-  background: rgba(0,0,0,0.35);
-  color: #fff;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  font-weight: 800;
-  padding: 0 3px;
-  border-radius: 2px;
-  letter-spacing: 0.5px;
-  line-height: 13px;
-  margin-top: 1px;
-}
-.xj-panel {
-  border: 2px solid #F97316;
-  border-radius: 8px;
-  background: #FFF7ED;
-  margin: 12px 0;
-  overflow: hidden;
-}
-.xj-panel-header {
-  background: #F97316;
-  color: #fff;
-  font-weight: 700;
-  font-size: 14px;
-  padding: 10px 16px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  cursor: pointer;
-  user-select: none;
-}
-.xj-panel-body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
-.xj-card {
-  background: #fff;
-  border: 1px solid #FED7AA;
-  border-radius: 6px;
-  padding: 10px 14px;
-}
-.xj-card.approved { border-color: #4CAF50; background: #F0FFF4; }
-.xj-beam-label { font-size: 12px; font-weight: 700; color: #1A1D23; font-family: var(--font-mono); margin-bottom: 4px; }
-.xj-avail { font-size: 11px; color: #6B7280; margin-bottom: 8px; }
-.xj-fill-parts { display: flex; flex-direction: column; gap: 4px; }
-.xj-fill-row {
-  display: flex; align-items: center; gap: 8px;
-  background: #FFF7ED; border-radius: 4px; padding: 6px 10px;
-  font-size: 12px;
-}
-.xj-job-chip {
-  background: #F97316; color: #fff; font-weight: 800;
-  padding: 1px 7px; border-radius: 3px; font-size: 11px;
-  font-family: var(--font-mono); white-space: nowrap;
-}
-.xj-part-id { font-family: var(--font-mono); font-weight: 700; font-size: 12px; }
-.xj-actions { display: flex; gap: 6px; margin-top: 8px; }
-.xj-btn-approve {
-  background: #16A34A; color: #fff; border: none; border-radius: 5px;
-  padding: 5px 14px; font-size: 12px; font-weight: 700; cursor: pointer;
-}
-.xj-btn-approve:hover { background: #15803D; }
-.xj-btn-skip {
-  background: transparent; color: #9CA3AF; border: 1px solid #D1D5DB;
-  border-radius: 5px; padding: 5px 10px; font-size: 12px; cursor: pointer;
-}
-.xj-approved-badge { font-size: 11px; font-weight: 700; color: #16A34A; margin-top: 6px; }
-
 .seg-id {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -1078,7 +1003,7 @@ async function loadData() {
   try {
     let [stockRaw, partsRaw, remnantsRaw, deliveriesRaw] = await Promise.all([
       airtableFetchAll('Stock Material', {
-        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery']
+        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery','PO Number','Vendor','Expected Delivery']
       }),
       airtableFetchAll('Parts', {
         fields: ['Part ID','Size Key','Cut Length','Stock Material','Material Ordered','Job Number','Material Type','Material Size','Select for PO','Pending Delivery']
@@ -1105,6 +1030,9 @@ async function loadData() {
       materialType: r.fields['Material Type'] || null,
       sawInstructions: r.fields['Saw Instructions'] || '',
       delivery: Array.isArray(r.fields['Delivery']) ? r.fields['Delivery'] : (r.fields['Delivery'] ? [r.fields['Delivery']] : []),
+      poNumber: r.fields['PO Number'] || '',
+      vendor: r.fields['Vendor'] ? (typeof r.fields['Vendor'] === 'object' ? r.fields['Vendor'].name : r.fields['Vendor']) : '',
+      expectedDelivery: r.fields['Expected Delivery'] || '',
       _raw: r
     }));
 
@@ -1179,7 +1107,6 @@ function getAvailableStock() {
 
 function getUnmatchedParts() {
   return DATA.parts.filter(p =>
-    p.materialOrdered &&
     (!p.stockMaterial || p.stockMaterial.length === 0) &&
     p.cutInches > 0
   );
@@ -1415,7 +1342,9 @@ function _runVirtualStrategy(partsToNest, standardLengths, strategy) {
         score = util * 1000 + subsetIdxs.length;
       }
 
-      // Short-beam bonus: prefer beams <= maxPreferredLength
+      // Apply short-beam bonus: beams at or under preferred length get a scoring boost
+      // This makes the algorithm prefer shorter beams unless a longer beam is genuinely
+      // significantly more efficient (controlled by shortBeamBonus setting, default 20%)
       if (len <= SETTINGS.maxPreferredLength && SETTINGS.shortBeamBonus > 0) {
         score *= (1 + SETTINGS.shortBeamBonus);
       }
@@ -1543,16 +1472,6 @@ function renderBarDiagram(stockPiece) {
     if (kerfPct > 0) segments.push(`<div class="bar-segment kerf-seg" style="width:${kerfPct}%"></div>`);
   }
 
-  // Cross-job fill segments
-  if (sp.crossFills && sp.crossFills.length > 0) {
-    let xjJobs = [...new Set(sp.crossFills.map(p => p.job || '?'))];
-    let xjInches = sp.crossFills.reduce((s, p) => s + p.cutInches + SETTINGS.kerf, 0);
-    let xjPct = (xjInches / total * 100).toFixed(2);
-    segments.push('<div class="bar-segment cross-fill" style="width:' + xjPct + '%" title="Cross-job fill: ' + xjInches.toFixed(1) + 'in">' +
-      xjJobs.map(j => '<span class="seg-job-badge">J' + escHtml(j) + '</span>').join(' ') +
-      '</div>');
-  }
-
   let drop = sp.remaining;
   if (drop > 0) {
     let isRemnant = drop >= SETTINGS.minRemnant;
@@ -1568,12 +1487,24 @@ function renderBarDiagram(stockPiece) {
   let utilPct = Math.round(((total - drop) / total) * 100);
   let utilColor = utilPct >= 90 ? 'var(--clr-remnant)' : utilPct >= 70 ? 'var(--clr-part)' : 'var(--clr-scrap)';
   let tagCls = sp.type === 'remnant' ? 'tag-remnant' : sp.type === 'virtual' ? 'tag-order' : 'tag-yard';
-  let tagLabel = sp.type === 'remnant' ? '♻️ REMNANT' : sp.type === 'virtual' ? '📦 ORDER' : 'YARD';
+  let stockStatus = sp.record && sp.record.status ? sp.record.status.toUpperCase() : 'IN STOCK';
+  // Build context line for ordered stock — show PO and/or expected delivery date
+  let stockContext = '';
+  if (sp.type === 'stock' && sp.record) {
+    let parts = [];
+    if (sp.record.poNumber) parts.push(`PO ${sp.record.poNumber}`);
+    if (sp.record.expectedDelivery) {
+      let d = new Date(sp.record.expectedDelivery);
+      parts.push(`Expected ${(d.getMonth()+1)}/${d.getDate()}`);
+    }
+    if (parts.length > 0) stockContext = `<span style="font-size:11px;color:#6B7280;margin-left:6px">${parts.join(' · ')}</span>`;
+  }
+  let tagLabel = sp.type === 'remnant' ? '♻️ REMNANT' : sp.type === 'virtual' ? '📦 ORDER' : stockStatus;
 
   return `
     <div class="bar-diagram">
       <div class="bar-label">
-        ${escHtml(sp.id)} <span class="tag ${tagCls}">${tagLabel}</span>
+        ${escHtml(sp.id)} <span class="tag ${tagCls}">${tagLabel}</span>${stockContext}
         <span class="text-muted text-xs">${inchesToDisplay(total)}</span>
       </div>
       <div class="bar-track">${segments.join('')}</div>
@@ -1641,42 +1572,100 @@ function renderPage(page) {
 // DASHBOARD
 // ============================================================
 function renderDashboard(el) {
+  let allParts = DATA.parts;
   let unmatched = getUnmatchedParts();
   let avail = getAvailableStock();
-  let remnants = DATA.remnants;
-  let groups = getSizeKeyGroups(unmatched);
-  let sizeKeys = Object.keys(groups).sort();
+  let remnants = DATA.remnants.filter(r => r.status === 'Available');
 
-  let tableRows = sizeKeys.map(key => {
-    let pts = groups[key];
-    let stockCount = avail.filter(s => {
-      let a = (s.sizeKey||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
-      let b = (key||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
-      return a === b;
-    }).length;
-    let remCount = remnants.filter(r => {
-      let a = (r.materialSize||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
-      let b = (key||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
-      return a === b;
-    }).length;
-    let ratio = stockCount > 0 ? Math.min(pts.length / stockCount, 5) : 5;
-    let barW = Math.min(ratio / 5 * 100, 100);
-    let barColor = stockCount === 0 ? 'var(--clr-scrap)' : stockCount >= pts.length ? 'var(--clr-remnant)' : 'var(--clr-part)';
-    return `<tr>
-      <td class="mono" style="font-weight:600">${escHtml(key)}</td>
-      <td style="text-align:center" class="mono">${pts.length}</td>
-      <td style="text-align:center" class="mono">${stockCount}</td>
-      <td style="text-align:center" class="mono">${remCount}</td>
-      <td style="text-align:center"><div style="width:80px;height:6px;background:#E5E7EB;border-radius:3px;overflow:hidden;display:inline-block">
-        <div style="width:${barW}%;height:100%;background:${barColor};border-radius:3px"></div>
-      </div></td>
-    </tr>`;
+  // Build per-job summary
+  let jobNums = [...new Set(allParts.map(p => p.job).filter(Boolean))].sort((a,b) => Number(a)-Number(b));
+
+  function normSK(s) { return (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,''); }
+
+  let totalUnmatched = unmatched.length;
+  let totalAssigned = allParts.length - totalUnmatched;
+
+  let jobCards = jobNums.map(job => {
+    let jobParts   = allParts.filter(p => p.job === job);
+    let assigned   = jobParts.filter(p => p.stockMaterial && p.stockMaterial.length > 0);
+    let needed     = jobParts.filter(p => !p.stockMaterial || p.stockMaterial.length === 0);
+    let pct        = jobParts.length ? Math.round(assigned.length / jobParts.length * 100) : 0;
+    let sizesNeeded = [...new Set(needed.map(p => p.sizeKey))];
+    let sizesWithStock = sizesNeeded.filter(sk =>
+      avail.some(s => normSK(s.sizeKey) === normSK(sk)) ||
+      remnants.some(r => normSK(r.materialSize) === normSK(sk))
+    );
+
+    let statusLabel, statusColor, statusBg;
+    if (needed.length === 0) {
+      statusLabel = '✅ All Assigned'; statusColor = '#16A34A'; statusBg = '#F0FDF4';
+    } else if (sizesWithStock.length === 0) {
+      statusLabel = '🔴 Needs Order'; statusColor = '#DC2626'; statusBg = '#FEF2F2';
+    } else if (sizesWithStock.length < sizesNeeded.length) {
+      statusLabel = '🟡 Partial Stock'; statusColor = '#D97706'; statusBg = '#FFFBEB';
+    } else {
+      statusLabel = '🟢 Ready to Nest'; statusColor = '#16A34A'; statusBg = '#F0FDF4';
+    }
+
+    // Size breakdown rows for this job
+    let sizeRows = sizesNeeded.map(sk => {
+      let skParts = needed.filter(p => p.sizeKey === sk);
+      let stockCt = avail.filter(s => normSK(s.sizeKey) === normSK(sk)).length;
+      let remCt   = remnants.filter(r => normSK(r.materialSize) === normSK(sk)).length;
+      let hasMat  = stockCt > 0 || remCt > 0;
+      return `<tr style="font-size:13px">
+        <td class="mono" style="padding:4px 8px;color:${hasMat ? 'inherit' : '#DC2626'}">${escHtml(sk)}</td>
+        <td class="mono" style="padding:4px 8px;text-align:center">${skParts.length}</td>
+        <td class="mono" style="padding:4px 8px;text-align:center;color:${stockCt>0?'#1565C0':'#9CA3AF'}">${stockCt}</td>
+        <td class="mono" style="padding:4px 8px;text-align:center;color:${remCt>0?'#16A34A':'#9CA3AF'}">${remCt}</td>
+      </tr>`;
+    }).join('');
+
+    let nestBtn = needed.length > 0 && sizesWithStock.length > 0
+      ? `<button class="btn btn-primary btn-sm" onclick="nestJob('${job}')" style="margin-top:12px">🪚 Nest Job ${job}</button>`
+      : needed.length > 0
+        ? `<button class="btn btn-sm" disabled style="margin-top:12px;opacity:0.5">No Stock Available</button>`
+        : '';
+
+    return `<div class="card" style="margin-bottom:16px">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <span style="font-size:17px;font-weight:700">Job ${escHtml(job)}</span>
+        <span style="font-size:12px;font-weight:600;padding:3px 10px;border-radius:12px;background:${statusBg};color:${statusColor}">${statusLabel}</span>
+      </div>
+      <div class="card-body">
+        <div style="display:flex;gap:24px;margin-bottom:10px;flex-wrap:wrap">
+          <div>
+            <div style="font-size:22px;font-weight:700;color:var(--clr-text)">${assigned.length}<span style="font-size:14px;font-weight:400;color:#6B7280"> / ${jobParts.length} parts assigned</span></div>
+            <div style="height:6px;background:#E5E7EB;border-radius:3px;margin-top:4px;width:200px">
+              <div style="width:${pct}%;height:100%;background:#16A34A;border-radius:3px;transition:width 0.3s"></div>
+            </div>
+          </div>
+          <div style="color:#6B7280;font-size:13px;padding-top:4px">
+            ${needed.length > 0 ? `<b style="color:var(--clr-text)">${needed.length}</b> parts need stock &nbsp;·&nbsp; <b style="color:${sizesWithStock.length===sizesNeeded.length?'#16A34A':'#D97706'}">${sizesWithStock.length}/${sizesNeeded.length}</b> sizes have material` : '<b style="color:#16A34A">Nothing left to assign</b>'}
+          </div>
+        </div>
+        ${needed.length > 0 ? `
+        <details>
+          <summary style="cursor:pointer;font-size:13px;color:#6B7280;user-select:none">▶ Show size breakdown</summary>
+          <table class="data-table" style="margin-top:8px">
+            <thead><tr>
+              <th style="font-size:12px">Size</th>
+              <th style="font-size:12px;text-align:center">Parts</th>
+              <th style="font-size:12px;text-align:center">Stock</th>
+              <th style="font-size:12px;text-align:center">Remnants</th>
+            </tr></thead>
+            <tbody>${sizeRows}</tbody>
+          </table>
+        </details>` : ''}
+        ${nestBtn}
+      </div>
+    </div>`;
   }).join('');
 
   el.innerHTML = `
     <div class="stat-cards">
       <div class="stat-card accent">
-        <div class="stat-card-value">${unmatched.length}</div>
+        <div class="stat-card-value">${totalUnmatched}</div>
         <div class="stat-card-label">Parts Need Assignment</div>
       </div>
       <div class="stat-card blue">
@@ -1689,25 +1678,20 @@ function renderDashboard(el) {
       </div>
     </div>
 
-    <div class="card">
-      <div class="card-header">Size Key Breakdown</div>
-      <div class="card-body" style="padding:0; overflow-x:auto">
-        ${sizeKeys.length === 0 ? '<div class="empty-state"><div class="icon">✅</div>All parts assigned!</div>' : `
-        <table class="data-table">
-          <thead><tr>
-            <th>Size Key</th><th style="text-align:center">Parts</th>
-            <th style="text-align:center">Stock</th><th style="text-align:center">Remnants</th><th style="text-align:center">Demand</th>
-          </tr></thead>
-          <tbody>${tableRows}</tbody>
-        </table>`}
-      </div>
-    </div>
+    ${jobNums.length === 0
+      ? '<div class="empty-state"><div class="icon">✅</div><p>All parts assigned!</p></div>'
+      : jobCards}
 
-    <div class="flex gap-3">
-      <button class="btn btn-primary btn-lg" onclick="navigateTo('autonest')">🪚 Start Auto Nest</button>
+    <div class="flex gap-3" style="margin-top:8px">
+      <button class="btn btn-primary btn-lg" onclick="navigateTo('autonest')">🪚 Auto Nest All Jobs</button>
       <button class="btn btn-lg" onclick="navigateTo('beam')">📐 I Have a Beam</button>
       <button class="btn btn-lg" onclick="navigateTo('cuts')">📋 I Have Cuts</button>
     </div>`;
+}
+
+function nestJob(job) {
+  window._nestJobFilter = job;
+  navigateTo('autonest');
 }
 
 // ============================================================
@@ -1718,12 +1702,13 @@ function renderAutoNest(el) {
   if (window._showNestSuccess) {
     let cp = window._lastConfirmedPieces || [];
     let info = window._nestSuccessInfo || {};
+    let job = window._nestJobFilter || '';
     window._showNestSuccess = false;
     el.innerHTML = `
       <div class="card" style="margin-top:16px">
         <div class="card-body" style="text-align:center;padding:32px">
           <div style="font-size:48px;margin-bottom:12px">✅</div>
-          <h3 style="margin-bottom:8px">${info.totalLinked || 0} parts linked across ${cp.length} stick${cp.length !== 1 ? 's' : ''}</h3>
+          <h3 style="margin-bottom:8px">${info.totalLinked || 0} parts linked across ${cp.length} stick${cp.length !== 1 ? 's' : ''}${job ? ' — Job ' + escHtml(job) : ''}</h3>
           <p class="text-muted" style="margin-bottom:16px">${info.totalRemnants > 0 ? info.totalRemnants + ' remnant(s) created' : 'No remnants created'}</p>
           <button class="btn btn-primary btn-lg" onclick="printCutSheets(window._lastConfirmedPieces)">🖨️ Print Cut Sheets (${cp.length})</button>
           <button class="btn btn-lg" onclick="navigateTo('cutqueue')" style="margin-left:8px">📄 View Cut Queue</button>
@@ -1734,36 +1719,107 @@ function renderAutoNest(el) {
     return;
   }
 
-  let unmatched = getUnmatchedParts();
+  let allUnmatched = getUnmatchedParts();
   let avail = getAvailableStock();
+
+  // Job filter
+  let allJobs = [...new Set(allUnmatched.map(p => p.job).filter(Boolean))].sort((a,b)=>Number(a)-Number(b));
+  let selectedJob = window._nestJobFilter || '';
+  // If the stored job no longer has unmatched parts, clear it
+  if (selectedJob && !allJobs.includes(selectedJob)) { selectedJob = ''; window._nestJobFilter = ''; }
+
+  let unmatched = selectedJob ? allUnmatched.filter(p => p.job === selectedJob) : allUnmatched;
   let groups = getSizeKeyGroups(unmatched);
   let sizeKeys = Object.keys(groups).sort();
 
-  if (unmatched.length === 0) {
+  if (allUnmatched.length === 0) {
     el.innerHTML = `<div class="empty-state"><div class="icon">✅</div>
       <p>All parts have stock assigned. Nothing to nest.</p>
       <button class="btn mt-4" onclick="navigateTo('dashboard')">← Dashboard</button></div>`;
     return;
   }
 
-  let scopeRows = sizeKeys.map(key => {
-    let pts = groups[key];
-    let stk = avail.filter(s => (s.sizeKey||'').toUpperCase().replace(/[^A-Z0-9./]/g,'') === key.toUpperCase().replace(/[^A-Z0-9./]/g,'')).length;
-    let rem = DATA.remnants.filter(r => (r.materialSize||'').toUpperCase().replace(/[^A-Z0-9./]/g,'') === key.toUpperCase().replace(/[^A-Z0-9./]/g,'')).length;
-    return `<tr><td class="mono" style="font-weight:600">${escHtml(key)}</td>
-      <td style="text-align:center" class="mono">${pts.length}</td>
-      <td style="text-align:center" class="mono">${stk}</td>
-      <td style="text-align:center" class="mono">${rem}</td></tr>`;
-  }).join('');
+  let jobOptions = `<option value="">All Jobs (${allUnmatched.length} parts)</option>` +
+    allJobs.map(j => {
+      let ct = allUnmatched.filter(p => p.job === j).length;
+      return `<option value="${escHtml(j)}" ${selectedJob===j?'selected':''}>${escHtml(j)} — ${ct} part${ct!==1?'s':''}</option>`;
+    }).join('');
+
+  function normSK2(s) { return (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,''); }
+
+  // Split into ready (has material) and skip (no material)
+  let readySizes = sizeKeys.filter(key => {
+    let stk = avail.filter(s => normSK2(s.sizeKey) === normSK2(key)).length;
+    let rem = DATA.remnants.filter(r => normSK2(r.materialSize) === normSK2(key)).length;
+    return stk > 0 || rem > 0;
+  });
+  let skipSizes = sizeKeys.filter(key => {
+    let stk = avail.filter(s => normSK2(s.sizeKey) === normSK2(key)).length;
+    let rem = DATA.remnants.filter(r => normSK2(r.materialSize) === normSK2(key)).length;
+    return stk === 0 && rem === 0;
+  });
+  let noStockCount = skipSizes.length;
+
+  let readyPartsCount = readySizes.reduce((sum, key) => sum + groups[key].length, 0);
+  let skipPartsCount  = skipSizes.reduce((sum, key) => sum + groups[key].length, 0);
+
+  function buildMaterialSection(sizeList, canNest) {
+    if (sizeList.length === 0) return '';
+    return sizeList.map(key => {
+      let pts = groups[key];
+      let stk = avail.filter(s => normSK2(s.sizeKey) === normSK2(key)).length;
+      let rem = DATA.remnants.filter(r => normSK2(r.materialSize) === normSK2(key)).length;
+      let partIds = pts.map(p => `<span class="mono" style="font-size:11px;background:#F3F4F6;padding:1px 5px;border-radius:3px;margin:1px;display:inline-block">${escHtml(p.partId||'?')}</span>`).join('');
+      let matLine = canNest
+        ? `<span style="color:#16A34A;font-size:12px">${stk > 0 ? stk + ' beam' + (stk!==1?'s':'') : ''}${stk>0&&rem>0?' + ':''}${rem>0?rem+' remnant'+(rem!==1?'s':''):''} available</span>`
+        : `<span style="color:#DC2626;font-size:12px">No stock — will be skipped</span>`;
+      return `<div style="padding:10px 16px;border-bottom:1px solid #F3F4F6">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span class="mono" style="font-weight:700;font-size:14px">${escHtml(key)}</span>
+          <span style="font-size:13px;color:#6B7280">${pts.length} part${pts.length!==1?'s':''} &nbsp;·&nbsp; ${matLine}</span>
+        </div>
+        <div style="line-height:1.8">${partIds}</div>
+      </div>`;
+    }).join('');
+  }
+
+  let materialSectionsHtml = sizeKeys.length === 0
+    ? '<div style="padding:16px;color:#6B7280;font-size:13px">Select a job above</div>'
+    : `${readySizes.length > 0 ? `
+      <div style="padding:8px 16px;background:#F0FDF4;border-bottom:1px solid #BBF7D0;font-size:12px;font-weight:600;color:#16A34A;letter-spacing:0.05em">
+        ✅ WILL NEST — ${readyPartsCount} PART${readyPartsCount!==1?'S':''} · ${readySizes.length} SIZE${readySizes.length!==1?'S':''}
+      </div>
+      ${buildMaterialSection(readySizes, true)}` : ''}
+    ${skipSizes.length > 0 ? `
+      <div style="padding:8px 16px;background:#FEF2F2;border-top:${readySizes.length>0?'2px solid #FECACA':'none'};border-bottom:1px solid #FECACA;font-size:12px;font-weight:600;color:#DC2626;letter-spacing:0.05em">
+        ⛔ NEEDS ORDER — ${skipPartsCount} PART${skipPartsCount!==1?'S':''} · ${skipSizes.length} SIZE${skipSizes.length!==1?'S':''}
+      </div>
+      ${buildMaterialSection(skipSizes, false)}` : ''}`;
 
   el.innerHTML = `
     <div class="card">
-      <div class="card-header">Scope Summary</div>
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <span>🪚 Auto Nest</span>
+        <button class="btn btn-sm" onclick="navigateTo('dashboard')" style="font-size:12px">← Jobs</button>
+      </div>
+      <div class="card-body">
+        <div class="form-group" style="margin-bottom:0">
+          <label class="form-label" style="font-weight:600">Nest which job?</label>
+          <select class="form-select" id="nest-job-select" onchange="window._nestJobFilter=this.value;renderAutoNest(document.getElementById('content'))" style="max-width:320px;font-size:15px;font-weight:600">
+            ${jobOptions}
+          </select>
+          ${selectedJob ? `<div style="margin-top:6px;font-size:12px;color:#6B7280">${unmatched.length} parts scoped · ${noStockCount > 0 ? '<span style=\'color:#DC2626\'>' + noStockCount + ' size(s) have no stock — will skip</span>' : '<span style=\'color:#16A34A\'>All sizes have material</span>'}</div>` : ''}
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header" style="display:flex;justify-content:space-between;align-items:center">
+        <span>Material Check</span>
+        ${sizeKeys.length > 0 ? `<span style="font-size:12px;color:#6B7280">${unmatched.length} parts total</span>` : ''}
+      </div>
       <div class="card-body" style="padding:0">
-        <table class="data-table"><thead><tr>
-          <th>Size Key</th><th style="text-align:center">Parts</th>
-          <th style="text-align:center">Stock</th><th style="text-align:center">Remnants</th>
-        </tr></thead><tbody>${scopeRows}</tbody></table>
+        ${materialSectionsHtml}
       </div>
     </div>
 
@@ -1790,26 +1846,26 @@ function renderAutoNest(el) {
         </div>
         <div class="flex gap-3 mt-3" style="flex-wrap:wrap;align-items:flex-end">
           <div class="form-group">
-            <label class="form-label" title="Beams at or under this length get a scoring bonus">Max Preferred Length</label>
+            <label class="form-label" title="Beams up to this length get a scoring bonus — the algorithm prefers them unless a longer beam is significantly more efficient">Max Preferred Length</label>
             <select class="form-input" id="nest-maxpref" style="width:90px">
-              ${[20,25,30,35,40,45,50,55,60].map(ft => '<option value="' + (ft*12) + '" ' + (SETTINGS.maxPreferredLength===(ft*12)?'selected':'') + '>' + ft + "'" + '</option>').join('')}
+              ${[20,25,30,35,40,45,50,55,60].map(ft => `<option value="${ft*12}" ${SETTINGS.maxPreferredLength===ft*12?'selected':''}>${ft}'</option>`).join('')}
             </select>
           </div>
           <div class="form-group">
-            <label class="form-label" title="How much shorter beams are preferred over longer ones">Short Beam Bonus</label>
+            <label class="form-label" title="How much of a scoring advantage shorter beams get. 0% = no preference. 20% = shorter beam needs to be 20% less efficient to still win.">Short Beam Bonus</label>
             <select class="form-input" id="nest-shortbonus" style="width:90px">
-              ${[0,10,15,20,30,40].map(pct => '<option value="' + (pct/100) + '" ' + (Math.round(SETTINGS.shortBeamBonus*100)===pct?'selected':'') + '>' + pct + '%</option>').join('')}
+              ${[0,10,15,20,30,40].map(pct => `<option value="${pct/100}" ${Math.round(SETTINGS.shortBeamBonus*100)===pct?'selected':''}>${pct}%</option>`).join('')}
             </select>
           </div>
           <div style="font-size:12px;color:#6B7280;padding-bottom:6px;max-width:280px">
-            Beams at or under max preferred length get priority. Longer beams only win if significantly more efficient.
+            Beams ≤ max preferred length get priority. Only longer beams win if they're meaningfully more efficient.
           </div>
         </div>
       </div>
     </div>
 
-    <button class="btn btn-primary btn-lg" id="btn-run-nest" onclick="executeAutoNest()">
-      🪚 Run Optimization
+    <button class="btn btn-primary btn-lg" id="btn-run-nest" onclick="executeAutoNest()" ${unmatched.length===0?'disabled':''}>
+      🪚 Run Optimization${selectedJob ? ' — Job ' + escHtml(selectedJob) : ' — All Jobs'}
     </button>
     <div id="autonest-results" class="mt-4"></div>`;
 }
@@ -1827,7 +1883,9 @@ async function executeAutoNest() {
   SETTINGS.maxPreferredLength = parseInt(document.getElementById('nest-maxpref').value) || 480;
   SETTINGS.shortBeamBonus = parseFloat(document.getElementById('nest-shortbonus').value) || 0;
 
-  let unmatched = getUnmatchedParts();
+  let allUnmatched = getUnmatchedParts();
+  let selectedJob = window._nestJobFilter || '';
+  let unmatched = selectedJob ? allUnmatched.filter(p => p.job === selectedJob) : allUnmatched;
   let avail = getAvailableStock();
   let groups = getSizeKeyGroups(unmatched);
   let resultsEl = document.getElementById('autonest-results');
@@ -1902,8 +1960,12 @@ async function executeAutoNest() {
             <div class="summary-item"><div class="summary-val">${inchesToDisplay(totalWaste)}</div><div class="summary-label">Waste</div></div>
             <div class="summary-item"><div class="summary-val">${remnantCount}</div><div class="summary-label">New Remnants</div></div>
           </div>
-          ${result.unassigned.length > 0 ? `<p style="color:var(--clr-scrap);font-weight:600;margin-top:8px">
-            ⚠️ ${result.unassigned.length} part(s) couldn't fit — moved to Order tab</p>` : ''}
+          ${result.unassigned.length > 0 ? `<div style="margin-top:10px;padding:10px 12px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:6px;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <span>⚠️ <strong>${result.unassigned.length} part${result.unassigned.length!==1?'s':''} too long for available stock</strong> —
+            ${result.unassigned.map(p => `<span class="mono">${escHtml(p.partId||'?')}</span>`).join(', ')}
+            didn't fit on any beam in stock.</span>
+            <button onclick="switchNestTab('order')" style="white-space:nowrap;background:#D97706;color:white;border:none;border-radius:5px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer">📦 See Order Needed →</button>
+          </div>` : ''}
           <div class="legend">
             <div class="legend-item"><div class="legend-swatch" style="background:var(--clr-part)"></div>Part</div>
             <div class="legend-item"><div class="legend-swatch" style="background:var(--clr-remnant)"></div>Remnant (saved)</div>
@@ -1928,7 +1990,6 @@ async function executeAutoNest() {
 
   if (window._phase2Leftovers.length > 0) {
     let p2GlobalIdx = 0;
-    let p2GroupIdx = 0;
 
     for (let { sizeKey, parts } of window._phase2Leftovers) {
       let result = runVirtualOptimizer(parts, STANDARD_LENGTHS);
@@ -1940,7 +2001,7 @@ async function executeAutoNest() {
       for (let si = 0; si < result.usedStock.length; si++) {
         let sp = result.usedStock[si];
         barsHtml += `
-          <div class="nest-stick-row" data-stick-id="p2-${p2GroupIdx}-${si}" style="margin-bottom:10px">
+          <div class="nest-stick-row" style="margin-bottom:10px">
             <label class="stick-select" title="Select this stick for PO">
               <input type="checkbox" class="p2-stick-chk" data-p2idx="${p2GlobalIdx}" checked onchange="updateP2SelectionCount()">
             </label>
@@ -1948,7 +2009,6 @@ async function executeAutoNest() {
           </div>`;
         p2GlobalIdx++;
       }
-      p2GroupIdx++;
 
       let totalMat = result.usedStock.reduce((s, sp) => s + sp.totalLength, 0);
       let totalUsed = result.usedStock.reduce((s, sp) => {
@@ -2001,7 +2061,7 @@ async function executeAutoNest() {
       <div style="display:flex;gap:24px;flex-wrap:wrap;justify-content:center;align-items:center">
         ${hasPhase1 ? `<div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:20px">✅</span>
-          <div><strong>${totalP1Parts}</strong> parts → <strong>${totalP1Sticks}</strong> stock in yard</div>
+          <div><strong>${totalP1Parts}</strong> parts → <strong>${totalP1Sticks}</strong> existing stock assigned</div>
         </div>` : ''}
         ${hasPhase2 ? `<div style="display:flex;align-items:center;gap:8px">
           <span style="font-size:20px">📦</span>
@@ -2012,8 +2072,8 @@ async function executeAutoNest() {
     </div>
   </div>`;
 
-  // Tab buttons
-  html += `<div style="display:flex;gap:0;margin:12px 0 0 0;border-bottom:2px solid #e0e0e0">
+  // Tab buttons — sticky so they stay visible while scrolling
+  html += `<div id="nest-tab-bar" style="display:flex;gap:0;margin:12px 0 0 0;border-bottom:2px solid #e0e0e0;position:sticky;top:0;z-index:20;background:#F9FAFB">
     ${hasPhase1 ? `<button id="tab-instock" class="nest-tab active" onclick="switchNestTab('instock')" 
       style="padding:10px 20px;font-weight:700;font-size:14px;border:none;border-bottom:3px solid var(--clr-accent);background:none;cursor:pointer;color:var(--clr-accent);font-family:var(--font-mono)">
       ✅ IN STOCK (${totalP1Sticks})
@@ -2049,7 +2109,7 @@ async function executeAutoNest() {
   if (hasPhase2) {
     html += `<div id="nest-tab-order" style="display:${hasPhase1 ? 'none' : 'block'}">
       <p class="text-muted" style="text-align:center;margin:12px 0 8px">
-        Optimal stock lengths to order (20'–60' in 5' increments). Fewer, longer sticks preferred.
+        \${SETTINGS.maxPreferredLength < 720 ? "Prefers beams ≤ " + (SETTINGS.maxPreferredLength/12) + "'. Longer beams only when significantly more efficient." : "Optimal stock lengths to order (20'–60' in 5' increments)."}
       </p>
       ${phase2Cards}
       <div class="card phase2-card" style="position:sticky;bottom:0;z-index:10;border-top:2px solid #1565C0;margin-top:4px">
@@ -2081,22 +2141,6 @@ async function executeAutoNest() {
 
   // Stash results for confirm
   window._autoNestResults = allResults;
-
-  // Cross-job fill suggestions
-  window._crossJobSuggestions = computeCrossJobSuggestions(
-    allResults,
-    window._phase2Results || [],
-    getUnmatchedParts(),
-    selectedJob
-  );
-
-  // Inject cross-job panel if any suggestions
-  if (window._crossJobSuggestions.length > 0) {
-    let container = document.createElement('div');
-    container.id = 'xj-panel-container';
-    container.innerHTML = renderCrossJobPanel(window._crossJobSuggestions);
-    resultsEl.insertBefore(container, resultsEl.firstChild);
-  }
 }
 
 function switchNestTab(tab) {
@@ -2455,10 +2499,8 @@ async function confirmAutoNest() {
       try {
         let dropInches = sp.remaining;
         // Build saw instructions
-        let crossFills = sp.crossFills || [];
         let sawParts = sp.parts.map(p => `CF:${inchesToShortFeet(p.cutInches)}`);
-        let sawCrossJobs = crossFills.map(p => `CF:${inchesToShortFeet(p.cutInches)}(J${p.job||'?'})`);
-        let sawInstruction = [...sawParts, ...sawCrossJobs].join(' ');
+        let sawInstruction = sawParts.join(' ');
         if (dropInches >= SETTINGS.minRemnant) {
           sawInstruction += ` | DROP:${inchesToDisplay(dropInches)} -> SAVE REMNANT`;
         } else if (dropInches > 1) {
@@ -2474,19 +2516,11 @@ async function confirmAutoNest() {
               });
             }
           }
-          // Link cross-fill parts to same stock record
-          for (let p of crossFills) {
-            if (p.id) {
-              await airtableUpdate('Parts', p.id, {
-                'Stock Material': [sp.record.id]
-              });
-            }
-          }
           // Update saw instructions on stock
           await airtableUpdate('Stock Material', sp.record.id, {
             'Saw Instructions': sawInstruction
           });
-          totalLinked += sp.parts.length + crossFills.length;
+          totalLinked += sp.parts.length;
 
           // Create remnant if needed
           if (dropInches >= SETTINGS.minRemnant) {
@@ -4535,14 +4569,22 @@ function renderUndo(el) {
 
   window._undoSelected = new Set();
 
-  let rows = nested.map((s, i) => `
+  let rows = nested.map((s, i) => {
+    // Resolve part IDs from assignedParts record IDs
+    let partIds = (s.assignedParts || []).map(pid => {
+      let recId = typeof pid === 'object' ? pid.id : pid;
+      let partRec = DATA.parts.find(p => p.id === recId);
+      return partRec ? partRec.partId : recId.slice(-6);
+    });
+    return `
     <tr class="check-row" onclick="toggleUndo(${i})">
       <td><div class="custom-check" id="undo-check-${i}"></div></td>
       <td class="mono" style="font-weight:600">${escHtml(s.tag)}</td>
       <td>${escHtml(s.materialSize)}</td>
-      <td class="text-right mono">${s.assignedParts.length}</td>
+      <td class="mono" style="font-size:12px">${partIds.map(p => `<span style="background:#F3F4F6;padding:1px 5px;border-radius:3px;margin:1px;display:inline-block">${escHtml(p)}</span>`).join('')}</td>
       <td class="text-xs mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${escHtml(s.sawInstructions)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   el.innerHTML = `
     <div class="card">
@@ -4553,7 +4595,7 @@ function renderUndo(el) {
       <div class="card-body" style="padding:0">
         <table class="data-table"><thead><tr>
           <th style="width:32px">☑</th><th>Stock Tag</th><th>Material</th>
-          <th class="text-right">Parts</th><th>Saw Instructions</th>
+          <th>Parts</th><th>Saw Instructions</th>
         </tr></thead><tbody>${rows}</tbody></table>
       </div>
     </div>
@@ -5156,10 +5198,8 @@ async function confirmDeliveryNest() {
       let sp = result.usedStock[si];
       try {
         // Build saw instructions
-        let crossFills = sp.crossFills || [];
         let sawParts = sp.parts.map(p => `CF:${inchesToShortFeet(p.cutInches)}`);
-        let sawCrossJobs = crossFills.map(p => `CF:${inchesToShortFeet(p.cutInches)}(J${p.job||'?'})`);
-        let sawInstruction = [...sawParts, ...sawCrossJobs].join(' ');
+        let sawInstruction = sawParts.join(' ');
         let dropInches = sp.remaining;
         if (dropInches >= SETTINGS.minRemnant) {
           sawInstruction += ` | DROP:${inchesToDisplay(dropInches)} -> SAVE REMNANT`;
@@ -5257,114 +5297,6 @@ async function confirmDeliveryNest() {
   DELIVERY_STATE.manualJobNumber = null;
 
   await loadData();
-}
-
-
-// ============================================================
-// CROSS-JOB FILL SYSTEM
-// ============================================================
-
-function computeCrossJobSuggestions(allResults, phase2Results, allUnmatched, primaryJob) {
-  let suggestions = [];
-  let suggId = 0;
-  const MIN_AVAILABLE = 12;
-
-  let otherParts = allUnmatched.filter(p => p.job && p.job !== primaryJob && p.id);
-  let otherBySizeKey = {};
-  for (let p of otherParts) {
-    let sk = p.sizeKey || getSizeKey(p);
-    if (!otherBySizeKey[sk]) otherBySizeKey[sk] = [];
-    otherBySizeKey[sk].push(p);
-  }
-
-  function processList(results, phase) {
-    for (let gi = 0; gi < results.length; gi++) {
-      let { sizeKey, result } = results[gi];
-      let candidates = otherBySizeKey[sizeKey] || [];
-      if (!candidates.length) continue;
-      for (let si = 0; si < result.usedStock.length; si++) {
-        let sp = result.usedStock[si];
-        let available = sp.remaining - SETTINGS.safetyMargin;
-        if (available < MIN_AVAILABLE) continue;
-        let partLengths = candidates.map(p => p.cutInches + SETTINGS.kerf);
-        let best = knapsackBestSubset(partLengths, available);
-        if (!best || best.length === 0) continue;
-        let fillParts = best.map(i => candidates[i]);
-        let fillInches = fillParts.reduce((s, p) => s + p.cutInches + SETTINGS.kerf, 0);
-        suggestions.push({ id: suggId++, phase, groupIdx: gi, stickIdx: si, sp, sizeKey, available, fillParts, fillInches, approved: false, rejected: false });
-      }
-    }
-  }
-
-  processList(allResults, 1);
-  if (phase2Results && phase2Results.length) processList(phase2Results, 2);
-  return suggestions;
-}
-
-function renderCrossJobPanel(suggestions) {
-  if (!suggestions || suggestions.length === 0) return '';
-  let pending = suggestions.filter(s => !s.approved && !s.rejected);
-  let approved = suggestions.filter(s => s.approved);
-  let badgeText = pending.length > 0 ? (pending.length + ' pending') : (approved.length + ' approved');
-
-  let cards = suggestions.filter(s => !s.rejected).map(s => {
-    let partRows = s.fillParts.map(p =>
-      '<div class="xj-fill-row">' +
-      '<span class="xj-job-chip">J' + escHtml(p.job || '?') + '</span> ' +
-      '<span class="xj-part-id">' + escHtml(p.id || '') + '</span> ' +
-      '<span style="color:#6B7280">' + inchesToDisplay(p.cutInches) + '</span>' +
-      '</div>'
-    ).join('');
-
-    if (s.approved) {
-      return '<div class="xj-card approved" id="xj-card-' + s.id + '">' +
-        '<div class="xj-beam-label">' + escHtml(s.sizeKey) + ' &middot; Beam ' + (s.stickIdx + 1) + (s.phase === 2 ? ' (order)' : '') + '</div>' +
-        '<div class="xj-fill-parts">' + partRows + '</div>' +
-        '<div class="xj-approved-badge">&#x2705; Added to beam</div>' +
-        '</div>';
-    }
-    return '<div class="xj-card" id="xj-card-' + s.id + '">' +
-      '<div class="xj-beam-label">' + escHtml(s.sizeKey) + ' &middot; Beam ' + (s.stickIdx + 1) + (s.phase === 2 ? ' (order)' : '') + '</div>' +
-      '<div class="xj-avail">' + inchesToDisplay(s.available) + ' available after primary parts</div>' +
-      '<div class="xj-fill-parts">' + partRows + '</div>' +
-      '<div class="xj-actions">' +
-      '<button class="xj-btn-approve" onclick="approveCrossJobFill(' + s.id + ')">&#x2705; Add to Beam</button> ' +
-      '<button class="xj-btn-skip" onclick="rejectCrossJobFill(' + s.id + ')">Skip</button>' +
-      '</div></div>';
-  }).join('');
-
-  return '<div class="xj-panel"><div class="xj-panel-header" onclick="var b=this.nextElementSibling;b.style.display=b.style.display===\'none\'?\'\':\'none\'">' +
-    '&#x1F500; Cross-Job Fill Opportunities <span style="font-size:12px;font-weight:400;opacity:0.85">(' + badgeText + ')</span>' +
-    '</div><div class="xj-panel-body">' + cards + '</div></div>';
-}
-
-function approveCrossJobFill(suggId) {
-  let sugg = (window._crossJobSuggestions || []).find(s => s.id === suggId);
-  if (!sugg) return;
-  sugg.approved = true;
-  if (!sugg.sp.crossFills) sugg.sp.crossFills = [];
-  sugg.sp.crossFills.push(...sugg.fillParts);
-  sugg.sp.remaining -= sugg.fillInches;
-  let stickId = sugg.phase === 1 ? (sugg.groupIdx + '-' + sugg.stickIdx) : ('p2-' + sugg.groupIdx + '-' + sugg.stickIdx);
-  let barEl = document.querySelector('[data-stick-id="' + stickId + '"]');
-  if (barEl) {
-    let tmp = document.createElement('div');
-    tmp.innerHTML = renderBarDiagram(sugg.sp);
-    let newBarEl = tmp.querySelector('[data-stick-id]') || tmp.firstElementChild;
-    if (newBarEl) barEl.replaceWith(newBarEl);
-  }
-  let panelEl = document.getElementById('xj-panel-container');
-  if (panelEl) panelEl.innerHTML = renderCrossJobPanel(window._crossJobSuggestions);
-}
-
-function rejectCrossJobFill(suggId) {
-  let sugg = (window._crossJobSuggestions || []).find(s => s.id === suggId);
-  if (!sugg) return;
-  sugg.rejected = true;
-  let card = document.getElementById('xj-card-' + suggId);
-  if (card) card.style.display = 'none';
-  let panelEl = document.getElementById('xj-panel-container');
-  if (panelEl) panelEl.innerHTML = renderCrossJobPanel(window._crossJobSuggestions);
 }
 
 
