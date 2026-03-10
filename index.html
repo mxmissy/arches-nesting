@@ -811,7 +811,9 @@ const DEFAULT_SETTINGS = {
   safetyMargin: 1.0,
   minRemnant: 48,
   algorithm: 'auto',
-  exhaustiveLimit: 15
+  exhaustiveLimit: 15,
+  maxPreferredLength: 480,
+  shortBeamBonus: 0.20
 };
 
 let SETTINGS = { ...DEFAULT_SETTINGS };
@@ -1340,6 +1342,13 @@ function _runVirtualStrategy(partsToNest, standardLengths, strategy) {
         score = util * 1000 + subsetIdxs.length;
       }
 
+      // Apply short-beam bonus: beams at or under preferred length get a scoring boost
+      // This makes the algorithm prefer shorter beams unless a longer beam is genuinely
+      // significantly more efficient (controlled by shortBeamBonus setting, default 20%)
+      if (len <= SETTINGS.maxPreferredLength && SETTINGS.shortBeamBonus > 0) {
+        score *= (1 + SETTINGS.shortBeamBonus);
+      }
+
       if (score > bestScore) {
         bestScore = score;
         bestUtil = util;
@@ -1835,6 +1844,23 @@ function renderAutoNest(el) {
             <input class="form-input" id="nest-minrem" value="${SETTINGS.minRemnant}" style="width:80px" type="number" step="1">
           </div>
         </div>
+        <div class="flex gap-3 mt-3" style="flex-wrap:wrap;align-items:flex-end">
+          <div class="form-group">
+            <label class="form-label" title="Beams up to this length get a scoring bonus — the algorithm prefers them unless a longer beam is significantly more efficient">Max Preferred Length</label>
+            <select class="form-input" id="nest-maxpref" style="width:90px">
+              ${[20,25,30,35,40,45,50,55,60].map(ft => `<option value="${ft*12}" ${SETTINGS.maxPreferredLength===ft*12?'selected':''}>${ft}'</option>`).join('')}
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label" title="How much of a scoring advantage shorter beams get. 0% = no preference. 20% = shorter beam needs to be 20% less efficient to still win.">Short Beam Bonus</label>
+            <select class="form-input" id="nest-shortbonus" style="width:90px">
+              ${[0,10,15,20,30,40].map(pct => `<option value="${pct/100}" ${Math.round(SETTINGS.shortBeamBonus*100)===pct?'selected':''}>${pct}%</option>`).join('')}
+            </select>
+          </div>
+          <div style="font-size:12px;color:#6B7280;padding-bottom:6px;max-width:280px">
+            Beams ≤ max preferred length get priority. Only longer beams win if they're meaningfully more efficient.
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1854,6 +1880,8 @@ async function executeAutoNest() {
   SETTINGS.endTrim = parseFloat(document.getElementById('nest-endtrim').value) || 0.375;
   SETTINGS.safetyMargin = parseFloat(document.getElementById('nest-safety').value) || 1.0;
   SETTINGS.minRemnant = parseFloat(document.getElementById('nest-minrem').value) || 48;
+  SETTINGS.maxPreferredLength = parseInt(document.getElementById('nest-maxpref').value) || 480;
+  SETTINGS.shortBeamBonus = parseFloat(document.getElementById('nest-shortbonus').value) || 0;
 
   let allUnmatched = getUnmatchedParts();
   let selectedJob = window._nestJobFilter || '';
@@ -2081,7 +2109,7 @@ async function executeAutoNest() {
   if (hasPhase2) {
     html += `<div id="nest-tab-order" style="display:${hasPhase1 ? 'none' : 'block'}">
       <p class="text-muted" style="text-align:center;margin:12px 0 8px">
-        Optimal stock lengths to order (20'–60' in 5' increments). Fewer, longer sticks preferred.
+        \${SETTINGS.maxPreferredLength < 720 ? "Prefers beams ≤ " + (SETTINGS.maxPreferredLength/12) + "'. Longer beams only when significantly more efficient." : "Optimal stock lengths to order (20'–60' in 5' increments)."}
       </p>
       ${phase2Cards}
       <div class="card phase2-card" style="position:sticky;bottom:0;z-index:10;border-top:2px solid #1565C0;margin-top:4px">
