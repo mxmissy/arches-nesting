@@ -4459,11 +4459,18 @@ async function executeUndo(all) {
           }
         }
       }
-      // Clear saw instructions and reset status on stock
+      // Clear saw instructions (critical)
       await airtableUpdate('Stock Material', s.id, {
-        'Saw Instructions': '',
-        'Status': { name: 'Ordered' }
+        'Saw Instructions': ''
       });
+      // Reset status (non-critical — best effort)
+      try {
+        await airtableUpdate('Stock Material', s.id, {
+          'Status': { name: 'Ordered' }
+        });
+      } catch(e2) {
+        // Status reset failed — not blocking
+      }
       toast(`↩️ ${s.tag} — cleared`);
     } catch(e) {
       toast(`Error on ${s.tag}: ${e.message}`, 'error');
@@ -5032,15 +5039,20 @@ async function confirmDeliveryNest() {
         totalLinked += linkedCount;
         totalSticks++;
 
-        // Update saw instructions and status (non-critical)
+        // Update saw instructions (critical — kept separate from status)
         try {
           await airtableUpdate('Stock Material', sp.record.id, {
-            'Saw Instructions': sawInstruction,
-            'Status': { name: 'In Fabrication' }
+            'Saw Instructions': sawInstruction
           });
         } catch(e) {
           toast(`⚠️ Saw instructions on ${sp.id}: ${e.message}`, 'warning');
         }
+        // Update status to In Fabrication (best effort)
+        try {
+          await airtableUpdate('Stock Material', sp.record.id, {
+            'Status': { name: 'In Fabrication' }
+          });
+        } catch(e2) { /* not blocking */ }
 
         // Create remnant if needed (non-critical)
         if (dropInches >= SETTINGS.minRemnant) {
