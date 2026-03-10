@@ -4449,8 +4449,10 @@ async function executeUndo(all) {
       // Unlink each assigned part (from Parts side)
       if (s.assignedParts && s.assignedParts.length > 0) {
         for (let partLink of s.assignedParts) {
+          let partId = typeof partLink === 'object' ? partLink.id : partLink;
+          if (!partId) continue;
           try {
-            await airtableUpdate('Parts', partLink.id, {
+            await airtableUpdate('Parts', partId, {
               'Stock Material': [],
               'Material Ordered': false
             });
