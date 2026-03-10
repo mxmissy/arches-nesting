@@ -971,6 +971,20 @@ async function airtableCreate(table, fields) {
   return resp.json();
 }
 
+async function airtableDelete(table, recordId) {
+  let url = `https://api.airtable.com/v0/${SETTINGS.baseId}/${encodeURIComponent(table)}/${recordId}`;
+  let resp = await fetch(url, {
+    method: 'DELETE',
+    headers: { 'Authorization': `Bearer ${SETTINGS.apiKey}` }
+  });
+  if (!resp.ok) {
+    let errBody = '';
+    try { errBody = JSON.stringify(await resp.json()); } catch(e) {}
+    throw new Error(`Delete failed: ${resp.status} ${errBody}`);
+  }
+  return resp.json();
+}
+
 // ============================================================
 // DATA LOADING
 // ============================================================
@@ -4437,20 +4451,52 @@ async function executeUndo(all) {
         for (let partLink of s.assignedParts) {
           try {
             await airtableUpdate('Parts', partLink.id, {
-              'Stock Material': []
+              'Stock Material': [],
+              'Material Ordered': false
             });
           } catch(e2) {
             // Part may already be unlinked, continue
           }
         }
       }
-      // Clear saw instructions on stock
+      // Clear saw instructions and reset status on stock
       await airtableUpdate('Stock Material', s.id, {
-        'Saw Instructions': ''
+        'Saw Instructions': '',
+        'Status': { name: 'Ordered' }
       });
       toast(`↩️ ${s.tag} — cleared`);
     } catch(e) {
       toast(`Error on ${s.tag}: ${e.message}`, 'error');
+    }
+  }
+
+  // Delete remnants that were created from these stock beams
+  // Match by material type + size + approximate length from saw instructions
+  let remnantsToDelete = [];
+  for (let s of toUndo) {
+    if (s.sawInstructions && s.sawInstructions.includes('SAVE REMNANT')) {
+      // Extract drop length from saw instruction e.g. "DROP:4'-6 1/2" -> SAVE REMNANT"
+      let dropMatch = s.sawInstructions.match(/DROP:([\d'-\s\/]+)\s*->/);
+      if (dropMatch) {
+        let dropDisplay = dropMatch[1].trim();
+        let dropFt = Math.round(cutLengthToInches(dropDisplay) / 12 * 10) / 10;
+        // Find matching remnant records by material + size + length
+        let matches = DATA.remnants.filter(r =>
+          r.materialSize === s.materialSize &&
+          Math.abs(r.lengthFt - dropFt) < 0.2
+        );
+        remnantsToDelete.push(...matches.map(r => r.id));
+      }
+    }
+  }
+  if (remnantsToDelete.length > 0) {
+    for (let remId of remnantsToDelete) {
+      try {
+        await airtableDelete('Remnants', remId);
+        toast(`↩️ Remnant deleted`);
+      } catch(e) {
+        toast(`⚠️ Could not delete remnant: ${e.message}`, 'warning');
+      }
     }
   }
 
@@ -4464,7 +4510,6 @@ async function executeUndo(all) {
   let undoneIds = new Set(toUndo.map(s => s.id));
   for (let delivId of affectedDeliveryIds) {
     try {
-      // Check if any stock on this delivery still has nested parts after undo
       let stillNested = DATA.stock.filter(s =>
         s.delivery && s.delivery.includes(delivId) &&
         !undoneIds.has(s.id) &&
@@ -4479,7 +4524,7 @@ async function executeUndo(all) {
     }
   }
 
-  toast('Undo complete. Auto-created remnants must be deleted manually.');
+  toast('Undo complete.');
   await loadData();
 }
 
