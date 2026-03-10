@@ -1102,7 +1102,6 @@ function getAvailableStock() {
 
 function getUnmatchedParts() {
   return DATA.parts.filter(p =>
-    p.materialOrdered &&
     (!p.stockMaterial || p.stockMaterial.length === 0) &&
     p.cutInches > 0
   );
