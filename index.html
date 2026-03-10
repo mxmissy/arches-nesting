@@ -4454,6 +4454,31 @@ async function executeUndo(all) {
     }
   }
 
+  // Reset delivery status intelligently based on what's still nested
+  let affectedDeliveryIds = new Set();
+  for (let s of toUndo) {
+    if (s.delivery && s.delivery.length > 0) {
+      s.delivery.forEach(id => affectedDeliveryIds.add(id));
+    }
+  }
+  let undoneIds = new Set(toUndo.map(s => s.id));
+  for (let delivId of affectedDeliveryIds) {
+    try {
+      // Check if any stock on this delivery still has nested parts after undo
+      let stillNested = DATA.stock.filter(s =>
+        s.delivery && s.delivery.includes(delivId) &&
+        !undoneIds.has(s.id) &&
+        s.assignedParts && s.assignedParts.length > 0 &&
+        s.sawInstructions && s.sawInstructions.includes('CF:')
+      );
+      let newStatus = stillNested.length > 0 ? 'Partially Assigned' : 'Pending Assignment';
+      await airtableUpdate('Deliveries', delivId, { 'Nesting Status': newStatus });
+      toast(`↩️ Delivery → ${newStatus}`);
+    } catch(e) {
+      toast(`⚠️ Could not reset delivery status: ${e.message}`, 'warning');
+    }
+  }
+
   toast('Undo complete. Auto-created remnants must be deleted manually.');
   await loadData();
 }
