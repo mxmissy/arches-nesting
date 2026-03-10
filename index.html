@@ -1932,10 +1932,11 @@ async function executeAutoNest() {
             <div class="summary-item"><div class="summary-val">${inchesToDisplay(totalWaste)}</div><div class="summary-label">Waste</div></div>
             <div class="summary-item"><div class="summary-val">${remnantCount}</div><div class="summary-label">New Remnants</div></div>
           </div>
-          ${result.unassigned.length > 0 ? `<div style="margin-top:10px;padding:10px 12px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:6px;font-size:13px">
-            ⚠️ <strong>${result.unassigned.length} part${result.unassigned.length!==1?'s':''} too long for available stock</strong> —
+          ${result.unassigned.length > 0 ? `<div style="margin-top:10px;padding:10px 12px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:6px;font-size:13px;display:flex;align-items:center;justify-content:space-between;gap:12px">
+            <span>⚠️ <strong>${result.unassigned.length} part${result.unassigned.length!==1?'s':''} too long for available stock</strong> —
             ${result.unassigned.map(p => `<span class="mono">${escHtml(p.partId||'?')}</span>`).join(', ')}
-            didn't fit on any beam in stock. See the <strong>Order Needed</strong> tab — it shows what length${result.unassigned.length!==1?'s':''} to buy.
+            didn't fit on any beam in stock.</span>
+            <button onclick="switchNestTab('order')" style="white-space:nowrap;background:#D97706;color:white;border:none;border-radius:5px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer">📦 See Order Needed →</button>
           </div>` : ''}
           <div class="legend">
             <div class="legend-item"><div class="legend-swatch" style="background:var(--clr-part)"></div>Part</div>
@@ -2043,8 +2044,8 @@ async function executeAutoNest() {
     </div>
   </div>`;
 
-  // Tab buttons
-  html += `<div style="display:flex;gap:0;margin:12px 0 0 0;border-bottom:2px solid #e0e0e0">
+  // Tab buttons — sticky so they stay visible while scrolling
+  html += `<div id="nest-tab-bar" style="display:flex;gap:0;margin:12px 0 0 0;border-bottom:2px solid #e0e0e0;position:sticky;top:0;z-index:20;background:#F9FAFB">
     ${hasPhase1 ? `<button id="tab-instock" class="nest-tab active" onclick="switchNestTab('instock')" 
       style="padding:10px 20px;font-weight:700;font-size:14px;border:none;border-bottom:3px solid var(--clr-accent);background:none;cursor:pointer;color:var(--clr-accent);font-family:var(--font-mono)">
       ✅ IN STOCK (${totalP1Sticks})
