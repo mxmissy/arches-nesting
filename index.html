@@ -4581,7 +4581,7 @@ function renderDeliveryMode(el) {
         <div class="card-body" style="text-align:center;padding:32px">
           <div style="font-size:48px;margin-bottom:12px">✅</div>
           <h3 style="margin-bottom:8px">${info.totalLinked || 0} parts linked across ${info.sticks || 0} beam(s)</h3>
-          <p class="text-muted" style="margin-bottom:16px">Delivery marked as Assigned. Labels can now be printed.</p>
+          <p class="text-muted" style="margin-bottom:16px">${info.unassigned && info.unassigned.length > 0 ? 'Delivery marked as <strong>Partially Assigned</strong> — it will remain visible for follow-up.' : 'Delivery marked as Assigned. Labels can now be printed.'}</p>
           ${unassignedHtml}
           <div style="margin-top:16px">
             <button class="btn btn-primary btn-lg" onclick="navigateTo('cutqueue')">📄 View Cut Queue</button>
@@ -4594,7 +4594,7 @@ function renderDeliveryMode(el) {
 
   // Get pending deliveries
   let pendingDeliveries = DATA.deliveries.filter(d =>
-    !d.nestingStatus || d.nestingStatus === 'Pending Assignment'
+    !d.nestingStatus || d.nestingStatus === 'Pending Assignment' || d.nestingStatus === 'Partially Assigned'
   );
 
   let selectedId = DELIVERY_STATE.selectedDeliveryId;
@@ -4602,7 +4602,7 @@ function renderDeliveryMode(el) {
 
   // Delivery selector
   let deliveryOptions = pendingDeliveries.map(d =>
-    `<option value="${d.id}" ${d.id === selectedId ? 'selected' : ''}>${escHtml(d.display)}${d.poNumber ? ' — PO: ' + d.poNumber : ''}</option>`
+    `<option value="${d.id}" ${d.id === selectedId ? 'selected' : ''}>${escHtml(d.display)}${d.poNumber ? ' — PO: ' + d.poNumber : ''}${d.nestingStatus === 'Partially Assigned' ? ' ⚠️ Partial' : ''}</option>`
   ).join('');
 
   let selectorHtml = `
@@ -4979,10 +4979,11 @@ async function confirmDeliveryNest() {
     }
   }
 
-  // Mark delivery as Assigned
+  // Mark delivery Assigned or Partially Assigned depending on whether all parts fit
+  let newStatus = unassignedParts.length > 0 ? 'Partially Assigned' : 'Assigned';
   try {
     await airtableUpdate('Deliveries', selectedId, {
-      'Nesting Status': 'Assigned'
+      'Nesting Status': newStatus
     });
   } catch(e) {
     toast(`⚠️ Could not update delivery status: ${e.message}`, 'warning');
