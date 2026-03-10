@@ -2659,6 +2659,7 @@ async function confirmAutoNest() {
       let sp = result.usedStock[si];
       sp.sizeKey = sizeKey;
       sp.parts.forEach(p => { p.cutDisplay = inchesToDisplay(p.cutInches); });
+      (sp.crossFills || []).forEach(p => { p.cutDisplay = inchesToDisplay(p.cutInches); });
       confirmedPieces.push(sp);
     }
   }
@@ -4614,7 +4615,7 @@ function printCutSheets(pieces, titleOverride) {
     let key = sp.sizeKey || sp.record?.materialSize || 'Unknown';
     if (!groups[key]) groups[key] = [];
     groups[key].push(sp);
-    totalCuts += sp.parts.length;
+    totalCuts += sp.parts.length + (sp.crossFills ? sp.crossFills.length : 0);
   }
 
   let sizeKeys = Object.keys(groups).sort();
@@ -4629,23 +4630,33 @@ function printCutSheets(pieces, titleOverride) {
     for (let sp of groups[sk]) {
       stickNum++;
       let stockDisp = inchesToDisplay(sp.totalLength);
+      let allCuts = [
+        ...sp.parts.map(p => ({ ...p, isCrossFill: false })),
+        ...(sp.crossFills || []).map(p => ({ ...p, isCrossFill: true }))
+      ];
       let rowsHtml = '';
-      for (let j = 0; j < sp.parts.length; j++) {
-        let p = sp.parts[j];
+      for (let j = 0; j < allCuts.length; j++) {
+        let p = allCuts[j];
         let stripe = j % 2 === 0 ? '' : ' class="stripe"';
-        rowsHtml += `<tr${stripe}>
+        let jobTag = p.isCrossFill
+          ? `<span style="display:inline-block;background:#F97316;color:white;border-radius:8px;padding:0 5px;font-size:8pt;font-weight:700;margin-left:6px;vertical-align:middle">J${p.job || '?'}</span>`
+          : '';
+        let rowStyle = p.isCrossFill ? ' style="background:#FFF7ED"' : '';
+        rowsHtml += `<tr${stripe}${rowStyle}>
           <td class="chk-cell"><div class="checkbox"></div></td>
           <td class="num-cell">${j + 1}</td>
-          <td class="label-cell">${p.partId || 'Cut ' + (j+1)}</td>
+          <td class="label-cell">${p.partId || 'Cut ' + (j+1)}${jobTag}</td>
           <td class="dim-cell">${p.cutDisplay || inchesToDisplay(p.cutInches)}</td>
         </tr>`;
       }
+      let crossCount = (sp.crossFills || []).length;
+      let metaCross = crossCount > 0 ? ` · ${crossCount} cross-fill` : '';
 
       stickTablesHtml += `
         <div class="stick-block">
           <div class="stick-header">
             <div class="stick-title">${sp.id || 'STICK ' + stickNum}</div>
-            <div class="stick-meta">${sp.parts.length} cut${sp.parts.length !== 1 ? 's' : ''} · Stock: ${stockDisp}</div>
+            <div class="stick-meta">${sp.parts.length} cut${sp.parts.length !== 1 ? 's' : ''}${metaCross} · Stock: ${stockDisp}</div>
           </div>
           <table class="cut-table">
             <thead><tr>
