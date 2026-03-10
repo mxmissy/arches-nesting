@@ -4685,7 +4685,7 @@ function renderDeliveryMode(el) {
       .filter(Boolean)
   )].sort((a, b) => Number(b) - Number(a));
 
-  let beamsRemaining = deliveryStock.filter(s => !s.status || s.status === 'Ordered' || s.status === 'INCOMING').length;
+  let beamsRemaining = deliveryStock.filter(s => s.status !== 'In Use').length;
   let summaryHtml = `
     <div class="stat-cards">
       <div class="stat-card accent">
@@ -4708,15 +4708,16 @@ function renderDeliveryMode(el) {
     : `<table class="data-table">
         <thead><tr><th>Stock Tag</th><th>Material</th><th>Size</th><th>Length</th><th>Status</th></tr></thead>
         <tbody>${deliveryStock.map(s => {
-          let statusLabel = s.status || 'INCOMING';
-          let statusColor = statusLabel === 'In Use' ? '#16A34A' : statusLabel === 'Assigned' ? '#2196F3' : '#1565C0';
-          let statusBg = statusLabel === 'In Use' ? '#F0FDF4' : statusLabel === 'Assigned' ? '#E3F2FD' : '#E3F2FD';
+          let isInUse = s.status === 'In Use';
+          let statusLabel = isInUse ? 'IN USE' : 'INCOMING';
+          let statusColor = isInUse ? '#16A34A' : '#1565C0';
+          let statusBg = isInUse ? '#F0FDF4' : '#E3F2FD';
           return `<tr>
             <td class="mono" style="font-weight:600">${escHtml(s.tag)}</td>
             <td>${escHtml(s.materialType?.name || s.materialType || '')}</td>
             <td class="mono">${escHtml(s.materialSize)}</td>
             <td class="mono">${s.lengthFt} ft</td>
-            <td><span class="tag" style="background:${statusBg};color:${statusColor};font-size:11px;font-weight:700">${escHtml(statusLabel.toUpperCase())}</span></td>
+            <td><span class="tag" style="background:${statusBg};color:${statusColor};font-size:11px;font-weight:700">${statusLabel}</span></td>
           </tr>`;
         }).join('')}</tbody>
       </table>`;
