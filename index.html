@@ -4541,14 +4541,22 @@ function renderUndo(el) {
 
   window._undoSelected = new Set();
 
-  let rows = nested.map((s, i) => `
+  let rows = nested.map((s, i) => {
+    // Resolve part IDs from assignedParts record IDs
+    let partIds = (s.assignedParts || []).map(pid => {
+      let recId = typeof pid === 'object' ? pid.id : pid;
+      let partRec = DATA.parts.find(p => p.id === recId);
+      return partRec ? partRec.partId : recId.slice(-6);
+    });
+    return `
     <tr class="check-row" onclick="toggleUndo(${i})">
       <td><div class="custom-check" id="undo-check-${i}"></div></td>
       <td class="mono" style="font-weight:600">${escHtml(s.tag)}</td>
       <td>${escHtml(s.materialSize)}</td>
-      <td class="text-right mono">${s.assignedParts.length}</td>
+      <td class="mono" style="font-size:12px">${partIds.map(p => `<span style="background:#F3F4F6;padding:1px 5px;border-radius:3px;margin:1px;display:inline-block">${escHtml(p)}</span>`).join('')}</td>
       <td class="text-xs mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${escHtml(s.sawInstructions)}</td>
-    </tr>`).join('');
+    </tr>`;
+  }).join('');
 
   el.innerHTML = `
     <div class="card">
@@ -4559,7 +4567,7 @@ function renderUndo(el) {
       <div class="card-body" style="padding:0">
         <table class="data-table"><thead><tr>
           <th style="width:32px">☑</th><th>Stock Tag</th><th>Material</th>
-          <th class="text-right">Parts</th><th>Saw Instructions</th>
+          <th>Parts</th><th>Saw Instructions</th>
         </tr></thead><tbody>${rows}</tbody></table>
       </div>
     </div>
