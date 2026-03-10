@@ -4650,13 +4650,14 @@ function printCutSheets(pieces, titleOverride) {
         </tr>`;
       }
       let crossCount = (sp.crossFills || []).length;
-      let metaCross = crossCount > 0 ? ` · ${crossCount} cross-fill` : '';
+      let totalCutCount = sp.parts.length + crossCount;
+      let crossNote = crossCount > 0 ? ` <span style="font-size:7pt;opacity:0.65">(incl. ${crossCount} cross-fill)</span>` : '';
 
       stickTablesHtml += `
         <div class="stick-block">
           <div class="stick-header">
             <div class="stick-title">${sp.id || 'STICK ' + stickNum}</div>
-            <div class="stick-meta">${sp.parts.length} cut${sp.parts.length !== 1 ? 's' : ''}${metaCross} · Stock: ${stockDisp}</div>
+            <div class="stick-meta">${totalCutCount} cut${totalCutCount !== 1 ? 's' : ''}${crossNote} · Stock: ${stockDisp}</div>
           </div>
           <table class="cut-table">
             <thead><tr>
