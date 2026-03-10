@@ -1007,7 +1007,7 @@ async function loadData() {
         fields: ['Part ID','Size Key','Cut Length','Stock Material','Material Ordered','Job Number','Material Type','Material Size','Select for PO','Pending Delivery']
       }),
       airtableFetchAll('Remnants', {
-        fields: ['Remnant Display','Material Type','Material Size','Length (ft)','Status']
+        fields: ['Remnant Display','Material Type','Material Size','Length (ft)','Status','Notes']
       }).catch(() => []),
       airtableFetchAll('Deliveries', {}).catch(e => {
         console.error('Deliveries fetch failed:', e.message);
@@ -1063,10 +1063,7 @@ async function loadData() {
 
 
     // Process remnants
-    DATA.remnants = remnantsRaw.filter(r =>
-      (r.fields['Status'] === 'Available') &&
-      (r.fields['Length (ft)'] || 0) > 0
-    ).map(r => ({
+    DATA.remnants = remnantsRaw.map(r => ({
       id: r.id,
       display: r.fields['Remnant Display'] || '',
       materialType: r.fields['Material Type'] || null,
@@ -1074,8 +1071,9 @@ async function loadData() {
       lengthFt: r.fields['Length (ft)'] || 0,
       lengthInches: (r.fields['Length (ft)'] || 0) * 12,
       status: r.fields['Status'] || '',
+      notes: r.fields['Notes'] || '',
       _raw: r
-    }));
+    })).filter(r => r.lengthFt > 0);
 
     DATA.loaded = true;
     updateSidebarStats();
@@ -2357,7 +2355,8 @@ async function confirmAutoNest() {
               'Material Type': sp.record.materialType,
               'Material Size': sp.record.materialSize,
               'Length (ft)': Math.round(dropInches / 12 * 10) / 10,
-              'Status': 'Available'
+              'Status': 'Available',
+              'Notes': `nesting-app:${sp.record.id}`
             });
             totalRemnants++;
           }
@@ -2387,7 +2386,8 @@ async function confirmAutoNest() {
               'Material Type': sp.record.materialType,
               'Material Size': sp.record.materialSize,
               'Length (ft)': Math.round(dropInches / 12 * 10) / 10,
-              'Status': 'Available'
+              'Status': 'Available',
+              'Notes': `nesting-app:${sp.record.id}`
             });
             totalRemnants++;
           }
@@ -2677,7 +2677,8 @@ async function confirmBeamNest() {
         'Material Type': stockRec.materialType,
         'Material Size': stockRec.materialSize,
         'Length (ft)': Math.round(remaining / 12 * 10) / 10,
-        'Status': 'Available'
+        'Status': 'Available',
+        'Notes': `nesting-app:${stockRec.id}`
       });
       toast(`♻️ Remnant created: ${inchesToDisplay(remaining)}`);
     }
@@ -4479,33 +4480,36 @@ async function executeUndo(all) {
     }
   }
 
-  // Delete remnants that were created from these stock beams
-  // Match by material type + size + approximate length from saw instructions
-  let remnantsToDelete = [];
+  // Delete remnants created by these stock beams — matched via Notes stamp
+  let stockIdsToUndo = new Set(toUndo.map(s => s.id));
+  let remnantsToDelete = DATA.remnants.filter(r => {
+    if (!r.notes) return false;
+    let match = r.notes.match(/nesting-app:(.+)/);
+    return match && stockIdsToUndo.has(match[1].trim());
+  });
+  // Fallback: fuzzy match by material + size + length for remnants without stamp
   for (let s of toUndo) {
     if (s.sawInstructions && s.sawInstructions.includes('SAVE REMNANT')) {
-      // Extract drop length from saw instruction e.g. "DROP:4'-6 1/2" -> SAVE REMNANT"
       let dropMatch = s.sawInstructions.match(/DROP:([\d'-\s\/]+)\s*->/);
       if (dropMatch) {
-        let dropDisplay = dropMatch[1].trim();
-        let dropFt = Math.round(cutLengthToInches(dropDisplay) / 12 * 10) / 10;
-        // Find matching remnant records by material + size + length
-        let matches = DATA.remnants.filter(r =>
+        let dropFt = Math.round(cutLengthToInches(dropMatch[1].trim()) / 12 * 10) / 10;
+        let fuzzy = DATA.remnants.filter(r =>
+          !r.notes.includes('nesting-app:') &&
           r.materialSize === s.materialSize &&
           Math.abs(r.lengthFt - dropFt) < 0.2
         );
-        remnantsToDelete.push(...matches.map(r => r.id));
+        remnantsToDelete.push(...fuzzy);
       }
     }
   }
-  if (remnantsToDelete.length > 0) {
-    for (let remId of remnantsToDelete) {
-      try {
-        await airtableDelete('Remnants', remId);
-        toast(`↩️ Remnant deleted`);
-      } catch(e) {
-        toast(`⚠️ Could not delete remnant: ${e.message}`, 'warning');
-      }
+  // Deduplicate
+  let deleteIds = [...new Set(remnantsToDelete.map(r => r.id))];
+  for (let remId of deleteIds) {
+    try {
+      await airtableDelete('Remnants', remId);
+      toast(`↩️ Remnant deleted`);
+    } catch(e) {
+      toast(`⚠️ Could not delete remnant: ${e.message}`, 'warning');
     }
   }
 
@@ -5063,7 +5067,8 @@ async function confirmDeliveryNest() {
               'Material Type': sp.record.materialType,
               'Material Size': sp.record.materialSize,
               'Length (ft)': Math.round(dropInches / 12 * 10) / 10,
-              'Status': 'Available'
+              'Status': 'Available',
+              'Notes': `nesting-app:${sp.record.id}`
             });
           } catch(e) {
             toast(`⚠️ Remnant create: ${e.message}`, 'warning');
