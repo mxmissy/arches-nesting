@@ -449,6 +449,135 @@ body {
   min-width: 1px;
   max-width: 3px;
 }
+/* ── Cross-Job Fill ───────────────────────────────────────── */
+.bar-segment.cross-fill {
+  background: repeating-linear-gradient(45deg, #F97316, #F97316 4px, #FED7AA 4px, #FED7AA 8px);
+  position: relative;
+}
+.seg-job-badge {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 14px;
+  pointer-events: none;
+}
+.xj-panel {
+  border: 2px solid #F97316;
+  border-radius: 8px;
+  margin-top: 16px;
+  overflow: hidden;
+}
+.xj-panel-header {
+  background: #F97316;
+  color: white;
+  padding: 10px 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  font-weight: 600;
+  user-select: none;
+}
+.xj-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background: #FFF7ED;
+}
+.xj-card {
+  background: white;
+  border: 1px solid #FED7AA;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+.xj-card.approved {
+  background: #F0FDF4;
+  border-color: #86EFAC;
+}
+.xj-card.rejected {
+  display: none;
+}
+.xj-beam-label {
+  font-weight: 700;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.xj-avail {
+  font-size: 12px;
+  color: #6B7280;
+  margin-bottom: 8px;
+}
+.xj-fill-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 13px;
+  padding: 3px 0;
+}
+.xj-job-chip {
+  background: #F97316;
+  color: white;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.xj-part-id {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+.xj-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.xj-btn-approve {
+  background: #16A34A;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.xj-btn-skip {
+  background: #E5E7EB;
+  color: #374151;
+  border: none;
+  border-radius: 5px;
+  padding: 5px 12px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.xj-approved-badge {
+  color: #16A34A;
+  font-size: 12px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+.xj-pending-badge {
+  background: white;
+  color: #F97316;
+  border-radius: 10px;
+  padding: 1px 8px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.xj-empty {
+  text-align: center;
+  color: #6B7280;
+  padding: 12px;
+  font-size: 13px;
+}
 .seg-id {
   font-family: var(--font-mono);
   font-size: 10px;
@@ -1472,6 +1601,20 @@ function renderBarDiagram(stockPiece) {
     if (kerfPct > 0) segments.push(`<div class="bar-segment kerf-seg" style="width:${kerfPct}%"></div>`);
   }
 
+  // Cross-fill segments (approved from other jobs)
+  if (sp.crossFills && sp.crossFills.length > 0) {
+    for (let cf of sp.crossFills) {
+      let pct = (cf.cutInches / total * 100).toFixed(2);
+      segments.push(`<div class="bar-segment cross-fill" style="width:${pct}%" title="Cross-fill J${escHtml(cf.job||'?')}: ${escHtml(cf.partId||'')} ${inchesToDisplay(cf.cutInches)}">
+        <span class="seg-job-badge">J${escHtml(cf.job||'?')}</span>
+        <span class="seg-id" style="padding-left:16px">${escHtml(cf.partId||'')}</span>
+        <span class="seg-dim">${inchesToDisplay(cf.cutInches)}</span>
+      </div>`);
+      let kerfPct = (SETTINGS.kerf / total * 100).toFixed(2);
+      if (kerfPct > 0) segments.push(`<div class="bar-segment kerf-seg" style="width:${kerfPct}%"></div>`);
+    }
+  }
+
   let drop = sp.remaining;
   if (drop > 0) {
     let isRemnant = drop >= SETTINGS.minRemnant;
@@ -1998,10 +2141,12 @@ async function executeAutoNest() {
       totalStocksToOrder += result.usedStock.length;
 
       let barsHtml = '';
+      let p2GroupIdx = phase2Results.length - 1; // index of this group in phase2Results
       for (let si = 0; si < result.usedStock.length; si++) {
         let sp = result.usedStock[si];
+        let stickId = `p2-${p2GroupIdx}-${si}`;
         barsHtml += `
-          <div class="nest-stick-row" style="margin-bottom:10px">
+          <div class="nest-stick-row" data-stick-id="${stickId}" style="margin-bottom:10px">
             <label class="stick-select" title="Select this stick for PO">
               <input type="checkbox" class="p2-stick-chk" data-p2idx="${p2GlobalIdx}" checked onchange="updateP2SelectionCount()">
             </label>
@@ -2141,6 +2286,284 @@ async function executeAutoNest() {
 
   // Stash results for confirm
   window._autoNestResults = allResults;
+
+  // Cross-job fill: only when a specific job was selected
+  window._crossJobSuggestions = [];
+  if (selectedJob) {
+    window._crossJobSuggestions = computeCrossJobSuggestions(
+      allResults,
+      window._phase2Results || [],
+      getUnmatchedParts(),
+      selectedJob
+    );
+    if (window._crossJobSuggestions.length > 0) {
+      let resultsDiv = document.getElementById('autonest-results');
+      if (resultsDiv) {
+        resultsDiv.insertAdjacentHTML('beforeend', renderCrossJobPanel(window._crossJobSuggestions));
+      }
+    }
+  }
+}
+
+// ============================================================
+// CROSS-JOB FILL
+// ============================================================
+
+/**
+ * Compute cross-job fill suggestions.
+ * After nesting primaryJob, find other-job parts that fit in leftover space
+ * on the used stock pieces from allResults.
+ *
+ * @param {Array} allResults    - Phase 1 results: [{sizeKey, result, pool}]
+ * @param {Array} phase2Results - Phase 2 results: [{sizeKey, result, parts}]
+ * @param {Array} allUnmatched  - All currently unmatched parts from DATA
+ * @param {string} primaryJob   - The job that was just nested
+ * @returns {Array} suggestion objects
+ */
+function computeCrossJobSuggestions(allResults, phase2Results, allUnmatched, primaryJob) {
+  if (!primaryJob) return [];
+
+  // Build set of part IDs already nested in this session (all phases)
+  let nestedIds = new Set();
+  for (let { result } of allResults) {
+    for (let sp of result.usedStock) {
+      for (let p of sp.parts) { if (p.id) nestedIds.add(p.id); }
+    }
+  }
+  for (let { result } of phase2Results) {
+    for (let sp of result.usedStock) {
+      for (let p of sp.parts) { if (p.id) nestedIds.add(p.id); }
+    }
+  }
+
+  // Collect other-job unmatched parts grouped by sizeKey
+  let otherJobParts = allUnmatched.filter(p =>
+    p.job !== primaryJob && !nestedIds.has(p.id) && p.cutInches > 0
+  );
+  if (otherJobParts.length === 0) return [];
+
+  let bySize = {};
+  for (let p of otherJobParts) {
+    let k = p.sizeKey || 'UNKNOWN';
+    if (!bySize[k]) bySize[k] = [];
+    bySize[k].push(p);
+  }
+
+  let suggestions = [];
+  let suggIdx = 0;
+  const MIN_FILL = 12; // minimum inches of space worth filling
+
+  // Phase 1: real stock pieces
+  for (let gi = 0; gi < allResults.length; gi++) {
+    let { sizeKey, result } = allResults[gi];
+    let candidates = bySize[sizeKey];
+    if (!candidates || candidates.length === 0) continue;
+
+    for (let si = 0; si < result.usedStock.length; si++) {
+      let sp = result.usedStock[si];
+      // available = remaining minus safety margin (knapsack applies safety internally)
+      let available = sp.remaining - SETTINGS.safetyMargin;
+      if (available < MIN_FILL) continue;
+
+      // Find best-fitting subset from other-job candidates
+      let indices = knapsackBestSubset(candidates, sp.remaining);
+      if (!indices || indices.length === 0) continue;
+
+      let fillParts = indices.map(i => candidates[i]);
+      let fillInches = fillParts.reduce((s, p) => s + p.cutInches + SETTINGS.kerf, 0);
+      if (fillInches < 1) continue;
+
+      suggestions.push({
+        id: `xj-${suggIdx++}`,
+        phase: 1,
+        groupIdx: gi,
+        stickIdx: si,
+        sp,
+        sizeKey,
+        available,
+        fillParts,
+        fillInches,
+        approved: false,
+        rejected: false
+      });
+    }
+  }
+
+  // Phase 2: virtual sticks to be ordered (cross-job fill here is a bonus)
+  for (let gi = 0; gi < phase2Results.length; gi++) {
+    let { sizeKey, result } = phase2Results[gi];
+    let candidates = bySize[sizeKey];
+    if (!candidates || candidates.length === 0) continue;
+
+    for (let si = 0; si < result.usedStock.length; si++) {
+      let sp = result.usedStock[si];
+      let available = sp.remaining - SETTINGS.safetyMargin;
+      if (available < MIN_FILL) continue;
+
+      let indices = knapsackBestSubset(candidates, sp.remaining);
+      if (!indices || indices.length === 0) continue;
+
+      let fillParts = indices.map(i => candidates[i]);
+      let fillInches = fillParts.reduce((s, p) => s + p.cutInches + SETTINGS.kerf, 0);
+      if (fillInches < 1) continue;
+
+      suggestions.push({
+        id: `xj-${suggIdx++}`,
+        phase: 2,
+        groupIdx: gi,
+        stickIdx: si,
+        sp,
+        sizeKey,
+        available,
+        fillParts,
+        fillInches,
+        approved: false,
+        rejected: false
+      });
+    }
+  }
+
+  return suggestions;
+}
+
+/**
+ * Render the cross-job fill panel HTML.
+ * @param {Array} suggestions
+ * @returns {string} HTML
+ */
+function renderCrossJobPanel(suggestions) {
+  let pending = suggestions.filter(s => !s.approved && !s.rejected).length;
+  let approved = suggestions.filter(s => s.approved).length;
+
+  let cards = suggestions.map(s => {
+    let jobSet = [...new Set(s.fillParts.map(p => p.job).filter(Boolean))];
+    let chips = jobSet.map(j => `<span class="xj-job-chip">J${escHtml(j)}</span>`).join(' ');
+    let partRows = s.fillParts.map(p => `
+      <div class="xj-fill-row">
+        <span class="xj-job-chip">J${escHtml(p.job||'?')}</span>
+        <span class="xj-part-id">${escHtml(p.partId||p.id||'—')}</span>
+        <span class="text-muted" style="font-size:12px">${escHtml(p.sizeKey||'')}</span>
+        <span style="margin-left:auto;font-size:12px;font-weight:600">${inchesToDisplay(p.cutInches)}</span>
+      </div>`).join('');
+
+    let actions = s.approved
+      ? `<div class="xj-approved-badge">✅ Added to beam — will confirm with primary job</div>`
+      : s.rejected
+      ? ''
+      : `<div class="xj-actions">
+          <button class="xj-btn-approve" onclick="approveCrossJobFill('${s.id}')">✅ Add to beam</button>
+          <button class="xj-btn-skip" onclick="rejectCrossJobFill('${s.id}')">✗ Skip</button>
+        </div>`;
+
+    let phaseLabel = s.phase === 2 ? ' <span style="font-size:11px;color:#6B7280">(order stick)</span>' : '';
+    return `
+      <div class="xj-card ${s.approved ? 'approved' : ''} ${s.rejected ? 'rejected' : ''}" id="xj-card-${escHtml(s.id)}">
+        <div class="xj-beam-label">
+          📐 ${escHtml(s.sizeKey)}${phaseLabel}
+          &nbsp;·&nbsp; <span style="font-size:12px;font-weight:400">Beam: ${escHtml(s.sp.id)}</span>
+        </div>
+        <div class="xj-avail">
+          ${inchesToDisplay(s.available)} available after primary cuts
+          · ${s.fillParts.length} part${s.fillParts.length !== 1 ? 's' : ''} fit (${inchesToDisplay(s.fillInches)})
+        </div>
+        ${partRows}
+        ${actions}
+      </div>`;
+  }).join('');
+
+  let summaryLine = approved > 0
+    ? `<span style="font-size:12px;margin-left:8px;opacity:0.85">${approved} approved</span>`
+    : '';
+
+  return `
+    <div class="xj-panel" id="xj-panel">
+      <div class="xj-panel-header" onclick="toggleXjPanel()">
+        <span>🔀 Cross-Job Fill Opportunities</span>
+        <span>
+          ${pending > 0 ? `<span class="xj-pending-badge">${pending} pending</span>` : ''}
+          ${summaryLine}
+          <span style="margin-left:10px;font-size:16px" id="xj-chevron">▼</span>
+        </span>
+      </div>
+      <div class="xj-panel-body" id="xj-panel-body">
+        ${cards || '<div class="xj-empty">No fill opportunities found.</div>'}
+      </div>
+    </div>`;
+}
+
+function toggleXjPanel() {
+  let body = document.getElementById('xj-panel-body');
+  let chevron = document.getElementById('xj-chevron');
+  if (!body) return;
+  let hidden = body.style.display === 'none';
+  body.style.display = hidden ? 'flex' : 'none';
+  if (chevron) chevron.textContent = hidden ? '▼' : '▶';
+}
+
+/**
+ * Approve a cross-job fill suggestion:
+ * - Push fillParts onto sp.crossFills
+ * - Deduct fillInches from sp.remaining
+ * - Re-render bar diagram in place
+ * - Re-render the panel
+ */
+function approveCrossJobFill(suggId) {
+  let suggs = window._crossJobSuggestions;
+  if (!suggs) return;
+  let s = suggs.find(x => x.id === suggId);
+  if (!s || s.approved || s.rejected) return;
+
+  // Initialise crossFills array on the stock piece
+  if (!s.sp.crossFills) s.sp.crossFills = [];
+
+  // Add each fill part
+  for (let p of s.fillParts) {
+    s.sp.crossFills.push(p);
+    s.sp.remaining -= (p.cutInches + SETTINGS.kerf);
+  }
+
+  s.approved = true;
+
+  // Re-render the bar diagram in place
+  let stickId = s.phase === 1 ? `nest-${s.groupIdx}-${s.stickIdx}` : `p2-${s.groupIdx}-${s.stickIdx}`;
+  let row = document.querySelector(`[data-stick-id="${stickId}"]`);
+  if (row) {
+    let wrap = row.querySelector('.stick-bar-wrap');
+    if (wrap) wrap.innerHTML = renderBarDiagram(s.sp);
+  }
+
+  // Re-render the whole panel
+  _refreshCrossJobPanel();
+
+  toast(`✅ ${s.fillParts.length} part(s) from J${[...new Set(s.fillParts.map(p=>p.job))].join(',')} added to ${s.sp.id}`);
+}
+
+/**
+ * Reject (skip) a cross-job fill suggestion.
+ */
+function rejectCrossJobFill(suggId) {
+  let suggs = window._crossJobSuggestions;
+  if (!suggs) return;
+  let s = suggs.find(x => x.id === suggId);
+  if (!s) return;
+  s.rejected = true;
+  _refreshCrossJobPanel();
+}
+
+/** Refresh the cross-job panel HTML in place without re-running optimization. */
+function _refreshCrossJobPanel() {
+  let panel = document.getElementById('xj-panel');
+  if (!panel || !window._crossJobSuggestions) return;
+  let wasOpen = document.getElementById('xj-panel-body')?.style.display !== 'none';
+  let newHtml = renderCrossJobPanel(window._crossJobSuggestions);
+  panel.outerHTML = newHtml; // replace the whole panel element
+  // Restore collapsed/expanded state
+  if (!wasOpen) {
+    let body = document.getElementById('xj-panel-body');
+    let chevron = document.getElementById('xj-chevron');
+    if (body) body.style.display = 'none';
+    if (chevron) chevron.textContent = '▶';
+  }
 }
 
 function switchNestTab(tab) {
@@ -2498,9 +2921,12 @@ async function confirmAutoNest() {
       let sp = result.usedStock[si];
       try {
         let dropInches = sp.remaining;
-        // Build saw instructions
+        // Build saw instructions — primary parts
         let sawParts = sp.parts.map(p => `CF:${inchesToShortFeet(p.cutInches)}`);
-        let sawInstruction = sawParts.join(' ');
+        // Append cross-fill parts with job tag
+        let crossFills = sp.crossFills || [];
+        let crossSaw = crossFills.map(cf => `CF:${inchesToShortFeet(cf.cutInches)}(J${cf.job||'?'})`);
+        let sawInstruction = [...sawParts, ...crossSaw].join(' ');
         if (dropInches >= SETTINGS.minRemnant) {
           sawInstruction += ` | DROP:${inchesToDisplay(dropInches)} -> SAVE REMNANT`;
         } else if (dropInches > 1) {
@@ -2508,12 +2934,21 @@ async function confirmAutoNest() {
         }
 
         if (sp.type === 'stock') {
-          // Link each part to this stock record (from Parts side)
+          // Link primary parts to this stock record
           for (let p of sp.parts) {
             if (p.id) {
               await airtableUpdate('Parts', p.id, {
                 'Stock Material': [sp.record.id]
               });
+            }
+          }
+          // Link cross-fill parts to the same stock record
+          for (let cf of crossFills) {
+            if (cf.id) {
+              await airtableUpdate('Parts', cf.id, {
+                'Stock Material': [sp.record.id]
+              });
+              totalLinked++;
             }
           }
           // Update saw instructions on stock
@@ -2542,12 +2977,21 @@ async function confirmAutoNest() {
             'Length (ft)': sp.record.lengthFt,
             'Saw Instructions': sawInstruction
           });
-          // Link each part to the new stock record (from Parts side)
+          // Link primary parts to the new stock record
           for (let p of sp.parts) {
             if (p.id) {
               await airtableUpdate('Parts', p.id, {
                 'Stock Material': [newStock.id]
               });
+            }
+          }
+          // Link cross-fill parts to the same new stock record
+          for (let cf of crossFills) {
+            if (cf.id) {
+              await airtableUpdate('Parts', cf.id, {
+                'Stock Material': [newStock.id]
+              });
+              totalLinked++;
             }
           }
           // Mark remnant as Used
