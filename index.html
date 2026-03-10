@@ -816,7 +816,7 @@ const DEFAULT_SETTINGS = {
 
 let SETTINGS = { ...DEFAULT_SETTINGS };
 let DATA = { stock: [], parts: [], remnants: [], deliveries: [], loaded: false };
-let DELIVERY_STATE = { selectedDeliveryId: null, deliveryParts: [], deliveryStock: [] };
+let DELIVERY_STATE = { selectedDeliveryId: null, deliveryParts: [], deliveryStock: [], manualJobNumber: null };
 let STATE = { currentPage: 'dashboard' };
 
 // Load settings from localStorage
@@ -1026,8 +1026,7 @@ async function loadData() {
       cutInches: cutLengthToInches(r.fields['Cut Length']),
       stockMaterial: r.fields['Stock Material'] || [],
       materialOrdered: r.fields['Material Ordered'] || false,
-      job: Array.isArray(r.fields['Job Number']) ? (r.fields['Job Number'][0]?.name || '') : (r.fields['Job Number'] || ''),
-      jobId: Array.isArray(r.fields['Job Number']) ? (r.fields['Job Number'][0]?.id || null) : null,
+      job: r.fields['Job Number'] || '',
       materialType: r.fields['Material Type'] || null,
       materialSize: r.fields['Material Size'] || '',
       pendingDelivery: Array.isArray(r.fields['Pending Delivery']) ? r.fields['Pending Delivery'] : (r.fields['Pending Delivery'] ? [r.fields['Pending Delivery']] : []),
@@ -2099,7 +2098,6 @@ async function markPartsForPO() {
       };
       if (samplePart.materialType) createFields['Material Type'] = samplePart.materialType;
       if (samplePart.materialSize) createFields['Material Size'] = samplePart.materialSize;
-      if (samplePart.jobId) createFields['Job'] = [{ id: samplePart.jobId }];
 
       console.log('[PO] Creating stock:', JSON.stringify(createFields));
       console.log('[PO] Sample part data:', {
@@ -3466,8 +3464,6 @@ async function spCreatePO() {
       // Add parsed material type/size if available
       if (parsed.type) createFields['Material Type'] = parsed.type;
       if (parsed.size) createFields['Material Size'] = parsed.size;
-      let spSamplePart = sp.parts && sp.parts[0];
-      if (spSamplePart && spSamplePart.jobId) createFields['Job'] = [{ id: spSamplePart.jobId }];
 
       console.log('[SP-PO] Creating stock:', JSON.stringify(createFields));
 
@@ -4385,21 +4381,14 @@ function renderUndo(el) {
 
   window._undoSelected = new Set();
 
-  let rows = nested.map((s, i) => {
-    let isDelivery = s.delivery && s.delivery.length > 0;
-    let typeLabel = isDelivery
-      ? `<span style="color:var(--clr-stock);font-size:0.72rem;font-weight:600;background:var(--clr-stock-light);padding:2px 6px;border-radius:4px">📦 DELIVERY</span>`
-      : `<span style="color:var(--clr-text-secondary);font-size:0.72rem">Regular</span>`;
-    return `
+  let rows = nested.map((s, i) => `
     <tr class="check-row" onclick="toggleUndo(${i})">
       <td><div class="custom-check" id="undo-check-${i}"></div></td>
       <td class="mono" style="font-weight:600">${escHtml(s.tag)}</td>
       <td>${escHtml(s.materialSize)}</td>
       <td class="text-right mono">${s.assignedParts.length}</td>
-      <td>${typeLabel}</td>
-      <td class="text-xs mono" style="max-width:180px;overflow:hidden;text-overflow:ellipsis">${escHtml(s.sawInstructions)}</td>
-    </tr>`;
-  }).join('');
+      <td class="text-xs mono" style="max-width:200px;overflow:hidden;text-overflow:ellipsis">${escHtml(s.sawInstructions)}</td>
+    </tr>`).join('');
 
   el.innerHTML = `
     <div class="card">
@@ -4410,11 +4399,10 @@ function renderUndo(el) {
       <div class="card-body" style="padding:0">
         <table class="data-table"><thead><tr>
           <th style="width:32px">☑</th><th>Stock Tag</th><th>Material</th>
-          <th class="text-right">Parts</th><th>Type</th><th>Saw Instructions</th>
+          <th class="text-right">Parts</th><th>Saw Instructions</th>
         </tr></thead><tbody>${rows}</tbody></table>
       </div>
     </div>
-    <p class="text-muted text-xs" style="margin:8px 0">Delivery nests will restore Pending Delivery on parts and reset the delivery status to Pending Assignment.</p>
     <div class="flex gap-3">
       <button class="btn btn-danger" onclick="executeUndo(false)">↩️ Undo Selected</button>
       <button class="btn btn-danger" onclick="executeUndo(true)">↩️ Undo ALL</button>
@@ -4442,101 +4430,32 @@ async function executeUndo(all) {
   let toUndo = all ? stock : [...window._undoSelected].map(i => stock[i]);
   if (toUndo.length === 0) { toast('Select stock to undo', 'warning'); return; }
 
-  let deliveriesToReset = new Set();
-
   for (let s of toUndo) {
-    let isDelivery = s.delivery && s.delivery.length > 0;
-    let deliveryId = isDelivery ? s.delivery[0] : null;
-
     try {
-      // Step 1 — Reset each assigned part
+      // Unlink each assigned part (from Parts side)
       if (s.assignedParts && s.assignedParts.length > 0) {
         for (let partLink of s.assignedParts) {
           try {
-            let partUpdate = {
-              'Stock Material': [],
-              'Material Ordered': false,
-            };
-            // Restore Pending Delivery link if this was a delivery nest
-            if (deliveryId) {
-              partUpdate['Pending Delivery'] = [deliveryId];
-            }
-            await airtableUpdate('Parts', partLink.id, partUpdate);
+            await airtableUpdate('Parts', partLink.id, {
+              'Stock Material': []
+            });
           } catch(e2) {
-            console.warn(`Could not reset part ${partLink.id}:`, e2.message);
+            // Part may already be unlinked, continue
           }
         }
       }
-
-      // Step 2 — Clear the Stock Material record
-      let stockUpdate = {
-        'Saw Instructions': '',
-        'Assigned Parts': [],
-      };
-      if (deliveryId) {
-        // Keep the Delivery link on the stock — it still belongs to that delivery
-        // Just clear the nesting assignments
-      }
-      await airtableUpdate('Stock Material', s.id, stockUpdate);
-
-      // Track which deliveries need status reset
-      if (deliveryId) {
-        deliveriesToReset.add(deliveryId);
-      }
-
+      // Clear saw instructions on stock
+      await airtableUpdate('Stock Material', s.id, {
+        'Saw Instructions': ''
+      });
       toast(`↩️ ${s.tag} — cleared`);
     } catch(e) {
       toast(`Error on ${s.tag}: ${e.message}`, 'error');
     }
   }
 
-  // Step 3 — Restore orphaned unassigned parts (parts that were in the delivery
-  // but didn't fit on any beam — their Pending Delivery was cleared by confirm)
-  for (let deliveryId of deliveriesToReset) {
-    try {
-      let delivery = DATA.deliveries.find(d => d.id === deliveryId);
-      if (delivery && delivery.parts.length > 0) {
-        // Collect IDs of parts we already restored in Step 1
-        let alreadyRestored = new Set();
-        for (let s of toUndo) {
-          if (s.assignedParts) {
-            for (let p of s.assignedParts) alreadyRestored.add(p.id);
-          }
-        }
-        // For each part originally in the delivery, restore if not already handled
-        for (let partId of delivery.parts) {
-          if (alreadyRestored.has(partId)) continue;
-          try {
-            await airtableUpdate('Parts', partId, {
-              'Material Ordered': false,
-              'Pending Delivery': [deliveryId],
-            });
-            console.log(`[UNDO] Restored orphaned part ${partId} to delivery`);
-          } catch(e3) {
-            console.warn(`Could not restore orphaned part ${partId}:`, e3.message);
-          }
-        }
-      }
-    } catch(e) {
-      console.warn(`Orphan restore failed for delivery ${deliveryId}:`, e.message);
-    }
-  }
-
-  // Step 4 — Reset Delivery Nesting Status back to Pending Assignment
-  for (let deliveryId of deliveriesToReset) {
-    try {
-      await airtableUpdate('Deliveries', deliveryId, {
-        'Nesting Status': 'Pending Assignment'
-      });
-      toast(`📦 Delivery reset to Pending Assignment`);
-    } catch(e) {
-      console.warn(`Could not reset delivery ${deliveryId}:`, e.message);
-    }
-  }
-
-  toast('Undo complete ✅');
+  toast('Undo complete. Auto-created remnants must be deleted manually.');
   await loadData();
-  renderUndo(document.getElementById('page-content'));
 }
 
 // ============================================================
@@ -4709,7 +4628,7 @@ function renderDeliveryMode(el) {
 
   // Airtable linked record fields return arrays of record ID strings
   let deliveryPartIds = new Set(selected.parts); // strings, not objects
-  let deliveryParts = DATA.parts.filter(p =>
+  let linkedDeliveryParts = DATA.parts.filter(p =>
     p.pendingDelivery.includes(selectedId) || deliveryPartIds.has(p.id)
   ).filter(p =>
     !p.stockMaterial || p.stockMaterial.length === 0
@@ -4717,9 +4636,28 @@ function renderDeliveryMode(el) {
   let deliveryStockIds = new Set(selected.stockMaterial); // strings, not objects
   let deliveryStock = DATA.stock.filter(s => deliveryStockIds.has(s.id));
 
-  // Build size key groups from delivery parts
-  let groups = getSizeKeyGroups(deliveryParts);
-  let sizeKeys = Object.keys(groups).sort();
+  // Manual job pull: unmatched parts from a user-selected job number
+  let manualJob = DELIVERY_STATE.manualJobNumber || '';
+  let manualJobParts = [];
+  if (manualJob) {
+    let linkedIds = new Set(linkedDeliveryParts.map(p => p.id));
+    manualJobParts = DATA.parts.filter(p =>
+      p.job === manualJob &&
+      (!p.stockMaterial || p.stockMaterial.length === 0) &&
+      !linkedIds.has(p.id)
+    );
+  }
+
+  // Combined parts list for nesting
+  let deliveryParts = [...linkedDeliveryParts, ...manualJobParts];
+
+  // All unique job numbers from unmatched parts (for the job picker)
+  let allUnmatchedJobs = [...new Set(
+    DATA.parts
+      .filter(p => !p.stockMaterial || p.stockMaterial.length === 0)
+      .map(p => p.job)
+      .filter(Boolean)
+  )].sort((a, b) => Number(b) - Number(a));
 
   // Summary cards
   let summaryHtml = `
@@ -4752,18 +4690,54 @@ function renderDeliveryMode(el) {
         </tr>`).join('')}</tbody>
       </table>`;
 
-  // Parts list by size key
+  // Job picker card — shown when no linked parts exist, or always as an optional override
+  let jobPickerHtml = `
+    <div class="card" style="border:2px dashed #F59E0B;background:#FFFBEB">
+      <div class="card-header" style="background:#FEF3C7;color:#92400E;border-bottom:1px solid #FCD34D">
+        🔗 Pull Parts from Job <span style="font-weight:400;font-size:12px;margin-left:8px">(use when parts weren't linked to this PO)</span>
+      </div>
+      <div class="card-body" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div>
+          <label class="form-label" style="margin-bottom:4px;color:#92400E">Select Job Number</label>
+          <select class="form-select" id="manual-job-picker" style="width:240px;font-size:14px;padding:8px 10px"
+            onchange="DELIVERY_STATE.manualJobNumber=this.value||null;navigateTo('delivery')">
+            <option value="">— No job selected —</option>
+            ${allUnmatchedJobs.map(j =>
+              `<option value="${escHtml(j)}" ${j === manualJob ? 'selected' : ''}>Job ${escHtml(j)}</option>`
+            ).join('')}
+          </select>
+        </div>
+        ${manualJob ? `
+          <div style="margin-top:18px">
+            <span style="display:inline-block;background:#FCD34D;color:#78350F;padding:4px 10px;border-radius:16px;font-size:13px;font-weight:600">
+              Job ${escHtml(manualJob)} — ${manualJobParts.length} unmatched part(s) added
+            </span>
+            <button class="btn btn-sm" style="margin-left:8px;background:#fff;border:1px solid #D1D5DB"
+              onclick="DELIVERY_STATE.manualJobNumber=null;navigateTo('delivery')">✕ Clear</button>
+          </div>` : `
+          <div style="margin-top:18px;font-size:13px;color:#92400E">
+            Pick a job to pull its unmatched parts into this delivery's nesting session.
+          </div>`}
+      </div>
+    </div>`;
+
+  // Parts list — show source badge per part
+  let linkedIds = new Set(linkedDeliveryParts.map(p => p.id));
   let partsHtml = deliveryParts.length === 0
-    ? `<div class="empty-state"><div class="icon">✅</div><p>All parts assigned!</p></div>`
+    ? `<div class="empty-state"><div class="icon">🔩</div><p>No parts linked to this delivery.<br>Use the job picker above to pull in parts manually.</p></div>`
     : `<table class="data-table">
-        <thead><tr><th>Part ID</th><th>Job</th><th>Material</th><th>Size</th><th>Cut Length</th></tr></thead>
-        <tbody>${deliveryParts.map(p => `<tr>
-          <td class="mono" style="font-weight:600">${escHtml(p.partId)}</td>
-          <td class="mono">${escHtml(p.job)}</td>
-          <td>${escHtml(p.materialType?.name || p.materialType || '')}</td>
-          <td class="mono">${escHtml(p.materialSize)}</td>
-          <td class="mono">${escHtml(p.cutLength)}</td>
-        </tr>`).join('')}</tbody>
+        <thead><tr><th>Part ID</th><th>Job</th><th>Material</th><th>Size</th><th>Cut Length</th><th>Source</th></tr></thead>
+        <tbody>${deliveryParts.map(p => {
+          let isManual = !linkedIds.has(p.id);
+          return `<tr>
+            <td class="mono" style="font-weight:600">${escHtml(p.partId)}</td>
+            <td class="mono">${escHtml(p.job)}</td>
+            <td>${escHtml(p.materialType?.name || p.materialType || '')}</td>
+            <td class="mono">${escHtml(p.materialSize)}</td>
+            <td class="mono">${escHtml(p.cutLength)}</td>
+            <td><span class="tag" style="background:${isManual?'#FEF3C7':'#E3F2FD'};color:${isManual?'#92400E':'#1565C0'};font-size:11px">${isManual?'JOB PULL':'LINKED'}</span></td>
+          </tr>`;
+        }).join('')}</tbody>
       </table>`;
 
   // Auto-nest button only if both parts and stock exist
@@ -4778,6 +4752,7 @@ function renderDeliveryMode(el) {
       <div class="card-header">📦 Incoming Beams — ${escHtml(selected.display)}</div>
       <div class="card-body" style="padding:0;overflow-x:auto">${beamsHtml}</div>
     </div>
+    ${jobPickerHtml}
     <div class="card">
       <div class="card-header">🔩 Parts to Assign — ${deliveryParts.length} part(s)</div>
       <div class="card-body" style="padding:0;overflow-x:auto">${partsHtml}</div>
@@ -4785,7 +4760,7 @@ function renderDeliveryMode(el) {
     <div id="delivery-nest-results"></div>
     <div style="margin-top:16px;display:flex;gap:12px;align-items:center">
       ${nestBtnHtml}
-      <button class="btn" onclick="DELIVERY_STATE.selectedDeliveryId=null;navigateTo('delivery')">← Change Delivery</button>
+      <button class="btn" onclick="DELIVERY_STATE.selectedDeliveryId=null;DELIVERY_STATE.manualJobNumber=null;navigateTo('delivery')">← Change Delivery</button>
     </div>`;
 }
 
@@ -4798,11 +4773,25 @@ async function runDeliveryNest() {
 
   // Get scoped data (Airtable linked fields return arrays of record ID strings)
   let deliveryPartIds = new Set(selected.parts);
-  let deliveryParts = DATA.parts.filter(p =>
+  let linkedDeliveryParts = DATA.parts.filter(p =>
     p.pendingDelivery.includes(selectedId) || deliveryPartIds.has(p.id)
   ).filter(p =>
     (!p.stockMaterial || p.stockMaterial.length === 0) && p.cutInches > 0
   );
+
+  // Include manually-pulled job parts
+  let manualJob = DELIVERY_STATE.manualJobNumber || '';
+  let manualJobParts = [];
+  if (manualJob) {
+    let linkedIds = new Set(linkedDeliveryParts.map(p => p.id));
+    manualJobParts = DATA.parts.filter(p =>
+      p.job === manualJob &&
+      (!p.stockMaterial || p.stockMaterial.length === 0) &&
+      p.cutInches > 0 &&
+      !linkedIds.has(p.id)
+    );
+  }
+  let deliveryParts = [...linkedDeliveryParts, ...manualJobParts];
 
   let deliveryStockIds = new Set(selected.stockMaterial);
   let deliveryStock = DATA.stock.filter(s => deliveryStockIds.has(s.id));
@@ -5015,6 +5004,7 @@ async function confirmDeliveryNest() {
 
   window._showDeliverySuccess = true;
   window._deliverySuccessInfo = { totalLinked, sticks: totalSticks, unassigned: unassignedParts };
+  DELIVERY_STATE.manualJobNumber = null;
 
   await loadData();
 }
