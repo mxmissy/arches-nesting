@@ -1969,12 +1969,23 @@ async function executeAutoNest() {
     for (let si = 0; si < result.usedStock.length; si++) {
       let sp = result.usedStock[si];
       let stickId = `nest-${groupIdx}-${si}`;
+      let xjBtnHtml = sp.remaining >= SETTINGS.minRemnant
+        ? `<div id="xj-inline-${stickId}" style="margin-top:6px">
+             <button class="btn btn-sm" style="background:#FFF7ED;border:1.5px solid #F97316;color:#C2410C;font-size:12px;font-weight:600;padding:4px 10px"
+                     onclick="checkBeamCrossFill(${groupIdx},${si})">
+               🔀 Check cross-fill (${inchesToDisplay(sp.remaining)} available)
+             </button>
+           </div>`
+        : '';
       barsHtml += `
         <div class="nest-stick-row" data-stick-id="${stickId}">
           <label class="stick-select" title="Select this stick for confirmation">
             <input type="checkbox" class="nest-stick-chk" data-group="${groupIdx}" data-stick="${si}" checked onchange="updateNestSelectionCount()">
           </label>
-          <div class="stick-bar-wrap">${renderBarDiagram(sp)}</div>
+          <div class="stick-bar-wrap">
+            <div id="bar-${stickId}">${renderBarDiagram(sp)}</div>
+            ${xjBtnHtml}
+          </div>
         </div>`;
     }
 
@@ -2183,16 +2194,8 @@ async function executeAutoNest() {
 
   // Stash results for confirm
   window._autoNestResults = allResults;
+  window._xjCandidates = {}; // reset cross-fill cache for this run
 
-  // Cross-Job Fill — only when a specific job is selected
-  window._crossJobSuggestions = [];
-  if (selectedJob) {
-    window._crossJobSuggestions = computeCrossJobSuggestions(allResults, selectedJob);
-    if (window._crossJobSuggestions.length > 0) {
-      let resultsEl = document.getElementById('autonest-results');
-      if (resultsEl) resultsEl.insertAdjacentHTML('beforeend', renderCrossJobPanel(window._crossJobSuggestions));
-    }
-  }
 }
 
 function switchNestTab(tab) {
@@ -2671,145 +2674,159 @@ async function confirmAutoNest() {
 }
 
 // ============================================================
-// CROSS-JOB FILL
+// CROSS-JOB FILL — INLINE PER BEAM
 // ============================================================
 
-function computeCrossJobSuggestions(allResults, primaryJobStr) {
-  // Collect all part IDs already nested in this run
+function checkBeamCrossFill(gi, si) {
+  let allResults = window._autoNestResults || [];
+  if (!allResults[gi]) return;
+  let sp = allResults[gi].result.usedStock[si];
+  let sizeKey = allResults[gi].sizeKey;
+  let stickId = `nest-${gi}-${si}`;
+  let panelEl = document.getElementById(`xj-inline-${stickId}`);
+  if (!panelEl) return;
+
+  // Collect all currently-nested part IDs (including cross-fills already approved)
   let nestedIds = new Set();
   for (let { result } of allResults) {
-    for (let sp of result.usedStock) {
-      for (let p of sp.parts) nestedIds.add(p.id);
+    for (let s of result.usedStock) {
+      for (let p of s.parts) nestedIds.add(p.id);
+      for (let p of (s.crossFills || [])) nestedIds.add(p.id);
     }
   }
 
-  // Collect other-job unmatched parts, grouped by sizeKey
-  let otherParts = DATA.parts.filter(p =>
+  // Remaining space after any already-approved fills
+  let available = sp.remaining - SETTINGS.safetyMargin;
+
+  if (available < 12) {
+    panelEl.innerHTML = `<div style="font-size:12px;color:#6B7280;padding:4px 0">No usable space left on this beam.</div>`;
+    return;
+  }
+
+  // Find primary job(s) on this beam
+  let primaryJobs = new Set(sp.parts.map(p => p.job).filter(Boolean));
+  // Normalize sizeKey for comparison
+  let skNorm = (sizeKey || '').toUpperCase().replace(/[^A-Z0-9./]/g, '');
+
+  // Candidates: other-job unmatched parts, same size key
+  let candidates = DATA.parts.filter(p =>
     !nestedIds.has(p.id) &&
     (!p.stockMaterial || p.stockMaterial.length === 0) &&
     !p.materialOrdered &&
-    p.job !== primaryJobStr &&
-    p.cutInches > 0
+    !primaryJobs.has(p.job) &&
+    p.cutInches > 0 &&
+    (p.sizeKey || '').toUpperCase().replace(/[^A-Z0-9./]/g, '') === skNorm
   );
-  let bySize = {};
-  for (let p of otherParts) {
-    if (!bySize[p.sizeKey]) bySize[p.sizeKey] = [];
-    bySize[p.sizeKey].push(p);
+
+  if (candidates.length === 0) {
+    panelEl.innerHTML = `<div style="font-size:12px;color:#6B7280;padding:6px 0">No unmatched parts from other jobs match this size key.</div>`;
+    return;
   }
 
-  let suggestions = [];
-  let suggId = 0;
+  // Run knapsack to find best-fitting subset
+  let bestIdxs = knapsackBestSubset(candidates, available);
 
-  for (let gi = 0; gi < allResults.length; gi++) {
-    let { sizeKey, result } = allResults[gi];
-    let candidates = bySize[sizeKey] || [];
-    if (candidates.length === 0) continue;
-
-    for (let si = 0; si < result.usedStock.length; si++) {
-      let sp = result.usedStock[si];
-      if (sp.type === 'virtual') continue; // Skip order sticks — complex, defer
-      let available = sp.remaining - SETTINGS.safetyMargin;
-      if (available < 12) continue; // Less than 1" usable — skip
-
-      // knapsack to find best fill
-      let items = candidates.map(p => ({ ...p, weight: p.cutInches + SETTINGS.kerf }));
-      let indices = knapsackBestSubset(items, available);
-      if (indices.length === 0) continue;
-
-      let fillParts = indices.map(i => candidates[i]);
-      let fillInches = fillParts.reduce((s, p) => s + p.cutInches + SETTINGS.kerf, 0);
-
-      suggestions.push({
-        id: `xj-${suggId++}`,
-        groupIdx: gi,
-        stickIdx: si,
-        sp,
-        sizeKey,
-        available,
-        fillParts,
-        fillInches,
-        approved: false,
-        rejected: false
-      });
-    }
+  if (bestIdxs.length === 0) {
+    panelEl.innerHTML = `<div style="font-size:12px;color:#6B7280;padding:6px 0">No parts from other jobs fit in the remaining ${inchesToDisplay(available)}.</div>`;
+    return;
   }
-  return suggestions;
-}
 
-function renderCrossJobPanel(suggestions) {
-  let pending = suggestions.filter(s => !s.approved && !s.rejected).length;
-  let cards = suggestions.map(s => {
-    let partRows = s.fillParts.map(p =>
-      `<div class="xj-fill-row">
-        <span class="xj-job-chip">J${escHtml(p.job)}</span>
-        <span class="xj-part-id">${escHtml(p.partId)}</span>
-        <span style="color:#6B7280">${inchesToDisplay(p.cutInches)}</span>
-      </div>`
-    ).join('');
-    return `<div class="xj-card" id="xj-card-${escHtml(s.id)}">
-      <div class="xj-beam-label">📐 ${escHtml(s.sp.id)} — ${escHtml(s.sizeKey)}</div>
-      <div class="xj-avail">Available space: ${inchesToDisplay(s.available)} · Fill: ${inchesToDisplay(s.fillInches)}</div>
-      ${partRows}
-      <div class="xj-actions">
-        <button class="xj-btn-approve" onclick="approveCrossJobFill('${escHtml(s.id)}')">✅ Add to beam</button>
-        <button class="xj-btn-skip" onclick="rejectCrossJobFill('${escHtml(s.id)}')">✗ Skip</button>
-      </div>
-    </div>`;
+  // Store candidates for this stick so approveBeamCrossFill can read them
+  if (!window._xjCandidates) window._xjCandidates = {};
+  window._xjCandidates[stickId] = candidates;
+
+  let fillInches = bestIdxs.reduce((s, i) => s + candidates[i].cutInches + SETTINGS.kerf, 0);
+
+  let rows = bestIdxs.map((ci, rowIdx) => {
+    let p = candidates[ci];
+    return `<tr>
+      <td style="width:28px"><input type="checkbox" class="xj-part-chk" data-ci="${ci}" checked style="cursor:pointer"></td>
+      <td><span class="xj-job-chip">J${escHtml(p.job)}</span></td>
+      <td class="xj-part-id" style="font-family:var(--font-mono);font-size:12px;font-weight:600">${escHtml(p.partId)}</td>
+      <td style="font-size:12px;color:#6B7280">${escHtml(p.cutLength)}</td>
+      <td style="font-size:12px;text-align:right;font-family:var(--font-mono)">${p.cutInches.toFixed(1)}"</td>
+    </tr>`;
   }).join('');
 
-  return `<div class="xj-panel" id="xj-panel">
-    <div class="xj-panel-header" onclick="document.getElementById('xj-body').style.display = document.getElementById('xj-body').style.display==='none'?'flex':'none'">
-      🔀 Cross-Job Fill Opportunities
-      <span style="background:rgba(255,255,255,0.25);border-radius:10px;padding:1px 8px;font-size:12px">${pending} suggestion${pending!==1?'s':''}</span>
-    </div>
-    <div class="xj-panel-body" id="xj-body">${cards}</div>
-  </div>`;
+  panelEl.innerHTML = `
+    <div style="border:1.5px solid #F97316;border-radius:6px;padding:10px 12px;background:#FFF7ED;margin-top:4px">
+      <div style="font-size:12px;font-weight:700;color:#92400E;margin-bottom:6px">
+        🔀 Cross-fill candidates — ${inchesToDisplay(available)} available
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="font-size:10px;text-transform:uppercase;color:#9CA3AF;letter-spacing:.5px">
+          <th></th><th style="text-align:left">Job</th><th style="text-align:left">Part</th>
+          <th style="text-align:left">Length</th><th style="text-align:right">Inches</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:8px;font-size:11px;color:#6B7280" id="xj-fit-msg-${stickId}">
+        Best fit: ${inchesToDisplay(fillInches)} of ${inchesToDisplay(available)} used
+      </div>
+      <div style="margin-top:8px;display:flex;gap:8px">
+        <button class="xj-btn-approve" onclick="approveBeamCrossFill(${gi},${si})">✅ Add checked parts to beam</button>
+        <button class="xj-btn-skip" onclick="cancelBeamCrossFill(${gi},${si})">✗ Never mind</button>
+      </div>
+    </div>`;
 }
 
-function approveCrossJobFill(suggId) {
-  let suggs = window._crossJobSuggestions || [];
-  let s = suggs.find(x => x.id === suggId);
-  if (!s || s.approved || s.rejected) return;
+function approveBeamCrossFill(gi, si) {
+  let allResults = window._autoNestResults || [];
+  if (!allResults[gi]) return;
+  let sp = allResults[gi].result.usedStock[si];
+  let stickId = `nest-${gi}-${si}`;
+  let panelEl = document.getElementById(`xj-inline-${stickId}`);
+  let candidates = (window._xjCandidates || {})[stickId] || [];
 
-  // Add parts to sp.crossFills
-  if (!s.sp.crossFills) s.sp.crossFills = [];
-  s.sp.crossFills.push(...s.fillParts);
-  s.sp.remaining -= s.fillInches;
-  s.approved = true;
+  // Gather checked parts
+  let checked = [...panelEl.querySelectorAll('.xj-part-chk:checked')].map(cb => candidates[parseInt(cb.dataset.ci)]).filter(Boolean);
+  if (checked.length === 0) { toast('No parts selected', 'warning'); return; }
 
-  // Re-render bar diagram in place
-  let barEl = document.querySelector(`[data-stick-id="nest-${s.groupIdx}-${s.stickIdx}"]`);
-  if (barEl) barEl.innerHTML = renderBarDiagram(s.sp);
-
-  // Update card to approved state
-  let card = document.getElementById(`xj-card-${suggId}`);
-  if (card) {
-    card.classList.add('approved');
-    let jobList = s.fillParts.map(p => `J${p.job}`).join(', ');
-    card.querySelector('.xj-actions').innerHTML =
-      `<div class="xj-approved-badge">✅ Added — ${jobList} will be cut from this beam</div>`;
+  // Check they still fit
+  let fillInches = checked.reduce((s, p) => s + p.cutInches + SETTINGS.kerf, 0);
+  let available = sp.remaining - SETTINGS.safetyMargin;
+  if (fillInches > available) {
+    toast(`⚠️ Selected parts (${inchesToDisplay(fillInches)}) exceed available space (${inchesToDisplay(available)})`, 'error');
+    return;
   }
 
-  // Update panel pending count
-  let pending = suggs.filter(x => !x.approved && !x.rejected).length;
-  let panelHeader = document.querySelector('.xj-panel-header');
-  if (panelHeader) {
-    panelHeader.lastElementChild.textContent = `${pending} suggestion${pending!==1?'s':''}`;
-  }
+  // Commit to sp
+  if (!sp.crossFills) sp.crossFills = [];
+  sp.crossFills.push(...checked);
+  sp.remaining -= fillInches;
+
+  // Re-render bar diagram
+  let barEl = document.getElementById(`bar-${stickId}`);
+  if (barEl) barEl.innerHTML = renderBarDiagram(sp);
+
+  // Show confirmed state in panel
+  let jobList = [...new Set(checked.map(p => `J${p.job}`))].join(', ');
+  let newRemaining = sp.remaining;
+  let remnantNote = newRemaining >= SETTINGS.minRemnant
+    ? `${inchesToDisplay(newRemaining)} still available as remnant`
+    : newRemaining > 1 ? `${inchesToDisplay(newRemaining)} will be scrap` : 'No remaining space';
+
+  panelEl.innerHTML = `
+    <div style="background:#F0FDF4;border:1.5px solid #86EFAC;border-radius:6px;padding:8px 12px;margin-top:4px;font-size:12px">
+      <span style="color:#16A34A;font-weight:700">✅ ${checked.length} part${checked.length!==1?'s':''} added</span>
+      <span style="color:#6B7280;margin-left:6px">${jobList} · ${remnantNote}</span>
+      ${newRemaining >= SETTINGS.minRemnant
+        ? `<div style="margin-top:4px"><button class="btn btn-sm" style="background:#FFF7ED;border:1.5px solid #F97316;color:#C2410C;font-size:11px;padding:3px 8px"
+               onclick="checkBeamCrossFill(${gi},${si})">🔀 Check again (${inchesToDisplay(newRemaining)} left)</button></div>`
+        : ''}
+    </div>`;
 }
 
-function rejectCrossJobFill(suggId) {
-  let suggs = window._crossJobSuggestions || [];
-  let s = suggs.find(x => x.id === suggId);
-  if (!s) return;
-  s.rejected = true;
-  let card = document.getElementById(`xj-card-${suggId}`);
-  if (card) card.classList.add('rejected');
-  let pending = suggs.filter(x => !x.approved && !x.rejected).length;
-  let panelHeader = document.querySelector('.xj-panel-header');
-  if (panelHeader) {
-    panelHeader.lastElementChild.textContent = `${pending} suggestion${pending!==1?'s':''}`;
-  }
+function cancelBeamCrossFill(gi, si) {
+  let stickId = `nest-${gi}-${si}`;
+  let sp = (window._autoNestResults || [])[gi]?.result?.usedStock[si];
+  let panelEl = document.getElementById(`xj-inline-${stickId}`);
+  if (!panelEl) return;
+  panelEl.innerHTML = `
+    <button class="btn btn-sm" style="background:#FFF7ED;border:1.5px solid #F97316;color:#C2410C;font-size:12px;font-weight:600;padding:4px 10px;margin-top:4px"
+            onclick="checkBeamCrossFill(${gi},${si})">
+      🔀 Check cross-fill (${sp ? inchesToDisplay(sp.remaining) : '?'} available)
+    </button>`;
 }
 
 // ============================================================
