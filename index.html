@@ -4642,7 +4642,7 @@ function renderDeliveryMode(el) {
   if (manualJob) {
     let linkedIds = new Set(linkedDeliveryParts.map(p => p.id));
     manualJobParts = DATA.parts.filter(p =>
-      p.job === manualJob &&
+      normalizeJob(p.job) === manualJob &&
       (!p.stockMaterial || p.stockMaterial.length === 0) &&
       !linkedIds.has(p.id)
     );
@@ -4652,10 +4652,15 @@ function renderDeliveryMode(el) {
   let deliveryParts = [...linkedDeliveryParts, ...manualJobParts];
 
   // All unique job numbers from unmatched parts (for the job picker)
+  // Normalize: Job Number may be an array (linked record) or a string
+  function normalizeJob(j) {
+    if (Array.isArray(j)) return j[0] || '';
+    return j || '';
+  }
   let allUnmatchedJobs = [...new Set(
     DATA.parts
       .filter(p => !p.stockMaterial || p.stockMaterial.length === 0)
-      .map(p => p.job)
+      .map(p => normalizeJob(p.job))
       .filter(Boolean)
   )].sort((a, b) => Number(b) - Number(a));
 
@@ -4785,7 +4790,7 @@ async function runDeliveryNest() {
   if (manualJob) {
     let linkedIds = new Set(linkedDeliveryParts.map(p => p.id));
     manualJobParts = DATA.parts.filter(p =>
-      p.job === manualJob &&
+      (Array.isArray(p.job) ? p.job[0] : p.job) === manualJob &&
       (!p.stockMaterial || p.stockMaterial.length === 0) &&
       p.cutInches > 0 &&
       !linkedIds.has(p.id)
