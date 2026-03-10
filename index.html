@@ -1001,7 +1001,7 @@ async function loadData() {
   try {
     let [stockRaw, partsRaw, remnantsRaw, deliveriesRaw] = await Promise.all([
       airtableFetchAll('Stock Material', {
-        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery']
+        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery','PO Number','Vendor','Expected Delivery']
       }),
       airtableFetchAll('Parts', {
         fields: ['Part ID','Size Key','Cut Length','Stock Material','Material Ordered','Job Number','Material Type','Material Size','Select for PO','Pending Delivery']
@@ -1028,6 +1028,9 @@ async function loadData() {
       materialType: r.fields['Material Type'] || null,
       sawInstructions: r.fields['Saw Instructions'] || '',
       delivery: Array.isArray(r.fields['Delivery']) ? r.fields['Delivery'] : (r.fields['Delivery'] ? [r.fields['Delivery']] : []),
+      poNumber: r.fields['PO Number'] || '',
+      vendor: r.fields['Vendor'] ? (typeof r.fields['Vendor'] === 'object' ? r.fields['Vendor'].name : r.fields['Vendor']) : '',
+      expectedDelivery: r.fields['Expected Delivery'] || '',
       _raw: r
     }));
 
@@ -1476,12 +1479,23 @@ function renderBarDiagram(stockPiece) {
   let utilColor = utilPct >= 90 ? 'var(--clr-remnant)' : utilPct >= 70 ? 'var(--clr-part)' : 'var(--clr-scrap)';
   let tagCls = sp.type === 'remnant' ? 'tag-remnant' : sp.type === 'virtual' ? 'tag-order' : 'tag-yard';
   let stockStatus = sp.record && sp.record.status ? sp.record.status.toUpperCase() : 'IN STOCK';
+  // Build context line for ordered stock — show PO and/or expected delivery date
+  let stockContext = '';
+  if (sp.type === 'stock' && sp.record) {
+    let parts = [];
+    if (sp.record.poNumber) parts.push(`PO ${sp.record.poNumber}`);
+    if (sp.record.expectedDelivery) {
+      let d = new Date(sp.record.expectedDelivery);
+      parts.push(`Expected ${(d.getMonth()+1)}/${d.getDate()}`);
+    }
+    if (parts.length > 0) stockContext = `<span style="font-size:11px;color:#6B7280;margin-left:6px">${parts.join(' · ')}</span>`;
+  }
   let tagLabel = sp.type === 'remnant' ? '♻️ REMNANT' : sp.type === 'virtual' ? '📦 ORDER' : stockStatus;
 
   return `
     <div class="bar-diagram">
       <div class="bar-label">
-        ${escHtml(sp.id)} <span class="tag ${tagCls}">${tagLabel}</span>
+        ${escHtml(sp.id)} <span class="tag ${tagCls}">${tagLabel}</span>${stockContext}
         <span class="text-muted text-xs">${inchesToDisplay(total)}</span>
       </div>
       <div class="bar-track">${segments.join('')}</div>
@@ -1918,8 +1932,11 @@ async function executeAutoNest() {
             <div class="summary-item"><div class="summary-val">${inchesToDisplay(totalWaste)}</div><div class="summary-label">Waste</div></div>
             <div class="summary-item"><div class="summary-val">${remnantCount}</div><div class="summary-label">New Remnants</div></div>
           </div>
-          ${result.unassigned.length > 0 ? `<p style="color:var(--clr-scrap);font-weight:600;margin-top:8px">
-            ⚠️ ${result.unassigned.length} part(s) couldn't fit — moved to Order tab</p>` : ''}
+          ${result.unassigned.length > 0 ? `<div style="margin-top:10px;padding:10px 12px;background:#FFF7ED;border:1px solid #FED7AA;border-radius:6px;font-size:13px">
+            ⚠️ <strong>${result.unassigned.length} part${result.unassigned.length!==1?'s':''} too long for available stock</strong> —
+            ${result.unassigned.map(p => `<span class="mono">${escHtml(p.partId||'?')}</span>`).join(', ')}
+            didn't fit on any beam in stock. See the <strong>Order Needed</strong> tab — it shows what length${result.unassigned.length!==1?'s':''} to buy.
+          </div>` : ''}
           <div class="legend">
             <div class="legend-item"><div class="legend-swatch" style="background:var(--clr-part)"></div>Part</div>
             <div class="legend-item"><div class="legend-swatch" style="background:var(--clr-remnant)"></div>Remnant (saved)</div>
