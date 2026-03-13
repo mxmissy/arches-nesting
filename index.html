@@ -402,6 +402,10 @@ body {
 .tag-remnant { background: var(--clr-remnant-light); color: #2E7D32; }
 .tag-order { background: #E3F2FD; color: #1565C0; }
 .tag-ordered { background: var(--clr-ordered-light); color: #7B1FA2; }
+.tag-in-yard { background: #DCFCE7; color: #166534; }
+.tag-incoming { background: #FEF3C7; color: #92400E; }
+.tag-in-fab { background: #DBEAFE; color: #1E40AF; }
+.tag-on-order { background: #F3E8FF; color: #7C3AED; }
 
 .bar-track {
   width: 100%;
@@ -2007,20 +2011,56 @@ function renderBarDiagram(stockPiece) {
 
   let utilPct = Math.round(((total - drop) / total) * 100);
   let utilColor = utilPct >= 90 ? 'var(--clr-remnant)' : utilPct >= 70 ? 'var(--clr-part)' : 'var(--clr-scrap)';
-  let tagCls = sp.type === 'remnant' ? 'tag-remnant' : sp.type === 'virtual' ? 'tag-order' : 'tag-yard';
-  let stockStatus = sp.record && sp.record.status ? sp.record.status.toUpperCase() : 'IN STOCK';
-  // Build context line for ordered stock — show PO and/or expected delivery date
-  let stockContext = '';
-  if (sp.type === 'stock' && sp.record) {
-    let parts = [];
-    if (sp.record.poNumber) parts.push(`PO ${sp.record.poNumber}`);
-    if (sp.record.expectedDelivery) {
-      let d = new Date(sp.record.expectedDelivery);
-      parts.push(`Expected ${(d.getMonth()+1)}/${d.getDate()}`);
+
+  // Smart status tag for stock beams
+  let tagCls, tagLabel, stockContext = '';
+  if (sp.type === 'remnant') {
+    tagCls = 'tag-remnant';
+    tagLabel = '♻️ REMNANT';
+  } else if (sp.type === 'virtual') {
+    tagCls = 'tag-order';
+    tagLabel = '📦 ORDER';
+  } else {
+    // Real stock — determine meaningful status
+    let rawStatus = (sp.record && sp.record.status) ? sp.record.status : '';
+    let hasDelivery = sp.record && sp.record.delivery && sp.record.delivery.length > 0;
+
+    if (['Received','Label Printed'].includes(rawStatus)) {
+      tagCls = 'tag-in-yard';
+      tagLabel = '✅ IN YARD';
+    } else if (rawStatus === 'In Fabrication') {
+      tagCls = 'tag-in-fab';
+      tagLabel = '🔧 IN FAB';
+    } else if (rawStatus === 'Ordered' && hasDelivery) {
+      tagCls = 'tag-incoming';
+      tagLabel = '🚛 INCOMING';
+    } else if (rawStatus === 'Ordered') {
+      tagCls = 'tag-on-order';
+      tagLabel = '📋 ON ORDER';
+    } else {
+      tagCls = 'tag-yard';
+      tagLabel = rawStatus ? rawStatus.toUpperCase() : 'IN STOCK';
     }
-    if (parts.length > 0) stockContext = `<span style="font-size:11px;color:#6B7280;margin-left:6px">${parts.join(' · ')}</span>`;
+
+    // Build context line — PO, delivery, expected date
+    if (sp.record) {
+      let ctxParts = [];
+      if (sp.record.poNumber) ctxParts.push(`PO ${sp.record.poNumber}`);
+      if (hasDelivery) {
+        // Resolve delivery display name if possible
+        let delId = typeof sp.record.delivery[0] === 'object' ? sp.record.delivery[0].id : sp.record.delivery[0];
+        let delRec = DATA.deliveries ? DATA.deliveries.find(d => d.id === delId) : null;
+        if (delRec && delRec.display) {
+          ctxParts.push(delRec.display);
+        }
+      }
+      if (sp.record.expectedDelivery) {
+        let d = new Date(sp.record.expectedDelivery);
+        ctxParts.push(`ETA ${(d.getMonth()+1)}/${d.getDate()}`);
+      }
+      if (ctxParts.length > 0) stockContext = `<span style="font-size:11px;color:#6B7280;margin-left:6px">${ctxParts.join(' · ')}</span>`;
+    }
   }
-  let tagLabel = sp.type === 'remnant' ? '♻️ REMNANT' : sp.type === 'virtual' ? '📦 ORDER' : stockStatus;
 
   return `
     <div class="bar-diagram">
