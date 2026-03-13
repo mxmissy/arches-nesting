@@ -887,6 +887,9 @@ body {
     <button class="nav-btn active" data-page="dashboard">
       <span class="nav-icon">📊</span> Dashboard
     </button>
+    <button class="nav-btn" data-page="yardstock">
+      <span class="nav-icon">🏗️</span> Yard Stock
+    </button>
     <button class="nav-btn" data-page="autonest">
       <span class="nav-icon">🪚</span> Auto Nest
     </button>
@@ -2096,7 +2099,7 @@ function navigateTo(page) {
   STATE.currentPage = page;
   document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.page === page));
   let titles = {
-    dashboard: 'Dashboard', autonest: 'Auto Nest', beam: 'Beam → Find Parts',
+    dashboard: 'Dashboard', yardstock: 'Yard Stock', autonest: 'Auto Nest', beam: 'Beam → Find Parts',
     cuts: 'Cuts → Find Stock', sawplanner: 'Saw Planner', cutqueue: 'Cut Queue',
     undo: 'Undo Nesting', delivery: '🚚 Delivery Mode', settings: 'Settings'
   };
@@ -2129,6 +2132,7 @@ function renderPage(page) {
   }
   switch(page) {
     case 'dashboard': renderDashboard(el); break;
+    case 'yardstock': renderYardInventory(el); break;
     case 'autonest': renderAutoNest(el); break;
     case 'beam': renderBeamMode(el); break;
     case 'cuts': renderCutsMode(el); break;
@@ -2139,6 +2143,170 @@ function renderPage(page) {
     case 'settings': renderSettings(el); break;
     default: el.innerHTML = '<p>Unknown page</p>';
   }
+}
+
+// ============================================================
+// YARD STOCK INVENTORY PAGE
+// ============================================================
+function renderYardInventory(el) {
+  let normSK = s => (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
+
+  // All unassigned stock beams (regardless of job)
+  let unassigned = DATA.stock.filter(s =>
+    (!s.assignedParts || s.assignedParts.length === 0) &&
+    s.lengthInches > 0 &&
+    !['On Hold','Quote Pending'].includes(s.status)
+  );
+
+  // Also get assigned beams for the total count
+  let assigned = DATA.stock.filter(s =>
+    s.assignedParts && s.assignedParts.length > 0 &&
+    s.lengthInches > 0
+  );
+
+  // Check which sizes have parts waiting
+  let unmatchedParts = getUnmatchedParts();
+  let neededSKs = new Set(unmatchedParts.map(p => normSK(p.sizeKey)));
+
+  // Group unassigned by size key
+  let sizeGroups = {};
+  for (let s of unassigned) {
+    let sk = s.sizeKey || 'UNKNOWN';
+    if (!sizeGroups[sk]) sizeGroups[sk] = [];
+    sizeGroups[sk].push(s);
+  }
+
+  let sizeKeys = Object.keys(sizeGroups).sort();
+
+  // Compute totals
+  let totalValue = unassigned.reduce((sum, s) => sum + (s.totalCost || s.unitCost || 0), 0);
+  let sizesWithDemand = sizeKeys.filter(sk => neededSKs.has(normSK(sk)));
+  let sizesNoDemand = sizeKeys.filter(sk => !neededSKs.has(normSK(sk)));
+
+  // Status helper for compact inline tags
+  function statusTag(s) {
+    let rawStatus = s.status || '';
+    let hasDelivery = s.delivery && s.delivery.length > 0;
+    let cls, label;
+    if (['Received','Label Printed'].includes(rawStatus)) { cls = 'tag-in-yard'; label = '✅ IN YARD'; }
+    else if (rawStatus === 'In Fabrication') { cls = 'tag-in-fab'; label = '🔧 IN FAB'; }
+    else if (rawStatus === 'Ordered' && hasDelivery) { cls = 'tag-incoming'; label = '🚛 INCOMING'; }
+    else if (rawStatus === 'Ordered') { cls = 'tag-on-order'; label = '📋 ON ORDER'; }
+    else { cls = 'tag-yard'; label = rawStatus ? rawStatus.toUpperCase() : 'AVAILABLE'; }
+    return `<span class="tag ${cls}" style="font-size:10px;padding:1px 6px">${label}</span>`;
+  }
+
+  // Resolve job number for a stock beam
+  function beamJobLabel(s) {
+    let jobNums = (s.jobNumber || '').split(',').map(x => x.trim()).filter(Boolean);
+    if (jobNums.length > 0) return jobNums.map(j => `<span style="background:#EFF6FF;color:#1E40AF;border-radius:3px;padding:1px 5px;font-size:11px;font-weight:600">Job ${escHtml(j)}</span>`).join(' ');
+    return '<span style="color:#9CA3AF;font-size:11px">No job assigned</span>';
+  }
+
+  // Build size group cards
+  let groupsHtml = sizeKeys.map(sk => {
+    let beams = sizeGroups[sk];
+    let hasDemand = neededSKs.has(normSK(sk));
+    let demandParts = hasDemand ? unmatchedParts.filter(p => normSK(p.sizeKey) === normSK(sk)) : [];
+    let groupValue = beams.reduce((sum, s) => sum + (s.totalCost || s.unitCost || 0), 0);
+
+    let beamRows = beams.map(s => {
+      let vendorInfo = s.vendor || '';
+      let orderInfo = s.vendorOrderNumber ? `Order ${s.vendorOrderNumber}` : (s.poNumber ? `PO ${s.poNumber}` : '');
+      let contextParts = [vendorInfo, orderInfo].filter(Boolean).join(' · ');
+
+      return `<tr style="font-size:13px;border-bottom:1px solid #F3F4F6">
+        <td style="padding:6px 8px;font-family:var(--font-mono);font-weight:600">${escHtml(s.tag)}</td>
+        <td style="padding:6px 8px">${statusTag(s)}</td>
+        <td style="padding:6px 8px;font-family:var(--font-mono)">${s.lengthFt}'</td>
+        <td style="padding:6px 8px">${beamJobLabel(s)}</td>
+        <td style="padding:6px 8px;color:#6B7280;font-size:12px">${contextParts || '—'}</td>
+        <td style="padding:6px 8px;font-family:var(--font-mono);text-align:right">${s.totalCost ? '$' + s.totalCost.toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:0}) : '—'}</td>
+      </tr>`;
+    }).join('');
+
+    let demandBadge = hasDemand
+      ? `<span style="background:#DCFCE7;color:#166534;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;margin-left:8px">${demandParts.length} part${demandParts.length!==1?'s':''} waiting</span>`
+      : `<span style="background:#FEF3C7;color:#92400E;font-size:11px;padding:2px 8px;border-radius:10px;font-weight:600;margin-left:8px">No demand</span>`;
+
+    return `
+      <div class="card" style="margin-bottom:12px">
+        <div class="card-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center" onclick="toggleYardGroup('${normSK(sk)}')">
+          <div style="display:flex;align-items:center">
+            <span id="yd-arrow-${normSK(sk)}" style="font-size:12px;display:inline-block;margin-right:8px">▶</span>
+            <span class="mono" style="font-size:15px;font-weight:700">${escHtml(sk)}</span>
+            ${demandBadge}
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <span class="text-muted text-xs">${beams.length} beam${beams.length!==1?'s':''}${groupValue > 0 ? ' · $' + groupValue.toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:0}) : ''}</span>
+          </div>
+        </div>
+        <div id="yd-group-${normSK(sk)}" style="display:none">
+          <div class="card-body" style="padding:0">
+            <table style="width:100%;border-collapse:collapse">
+              <thead><tr style="font-size:11px;color:#6B7280;text-transform:uppercase;letter-spacing:0.05em;border-bottom:2px solid #E5E7EB">
+                <th style="padding:6px 8px;text-align:left">Stock Tag</th>
+                <th style="padding:6px 8px;text-align:left">Status</th>
+                <th style="padding:6px 8px;text-align:left">Length</th>
+                <th style="padding:6px 8px;text-align:left">Job</th>
+                <th style="padding:6px 8px;text-align:left">Vendor / Order</th>
+                <th style="padding:6px 8px;text-align:right">Cost</th>
+              </tr></thead>
+              <tbody>${beamRows}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div class="stat-cards">
+      <div class="stat-card" style="border-left:4px solid #0D9488">
+        <div class="stat-card-value">${unassigned.length}</div>
+        <div class="stat-card-label">Unassigned Beams</div>
+      </div>
+      <div class="stat-card" style="border-left:4px solid #2563EB">
+        <div class="stat-card-value">${assigned.length}</div>
+        <div class="stat-card-label">In Use (Nested)</div>
+      </div>
+      <div class="stat-card" style="border-left:4px solid #D97706">
+        <div class="stat-card-value">${sizeKeys.length}</div>
+        <div class="stat-card-label">Sizes in Yard</div>
+      </div>
+      <div class="stat-card" style="border-left:4px solid #16A34A">
+        <div class="stat-card-value">$${totalValue > 0 ? totalValue.toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:0}) : '0'}</div>
+        <div class="stat-card-label">Unassigned Value</div>
+      </div>
+    </div>
+
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="btn btn-sm" onclick="expandAllYardGroups(true)">Expand All</button>
+      <button class="btn btn-sm" onclick="expandAllYardGroups(false)">Collapse All</button>
+      <span class="text-muted text-xs" style="padding-top:6px">${sizesWithDemand.length} size${sizesWithDemand.length!==1?'s':''} have parts waiting · ${sizesNoDemand.length} with no current demand</span>
+    </div>
+
+    ${groupsHtml}
+
+    ${unassigned.length === 0 ? '<div class="empty-state"><div class="icon">✅</div><p>No unassigned stock in the yard. All beams are nested.</p></div>' : ''}
+  `;
+}
+
+function toggleYardGroup(skNorm) {
+  let body = document.getElementById('yd-group-' + skNorm);
+  let arrow = document.getElementById('yd-arrow-' + skNorm);
+  if (!body) return;
+  let isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
+function expandAllYardGroups(open) {
+  document.querySelectorAll('[id^="yd-group-"]').forEach(el => {
+    el.style.display = open ? 'block' : 'none';
+  });
+  document.querySelectorAll('[id^="yd-arrow-"]').forEach(el => {
+    el.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
+  });
 }
 
 // ============================================================
