@@ -6285,18 +6285,28 @@ async function executeUndo(all) {
         }
       }
       // Clear saw instructions (critical)
-      await airtableUpdate('Stock Material', s.id, {
-        'Saw Instructions': ''
-      });
-      // Reset status (non-critical — best effort)
-      try {
+      // Detect Phase 2 records (created by nesting app for PO ordering)
+      // These have no status, no vendor, no PO, no delivery — they're placeholders
+      let isPhase2Created = !s.status && !s.vendor && !s.poNumber && (!s.delivery || s.delivery.length === 0);
+      if (isPhase2Created) {
+        // Phase 2: delete the entire STK record — it was created by the nesting app
+        await airtableDelete('Stock Material', s.id);
+        toast(`↩️ ${s.tag} — deleted (was created for PO)`);
+      } else {
+        // Phase 1: keep the beam, just clear saw instructions and reset status
         await airtableUpdate('Stock Material', s.id, {
-          'Status': { name: 'Ordered' }
+          'Saw Instructions': ''
         });
-      } catch(e2) {
-        // Status reset failed — not blocking
+        // Reset status (non-critical — best effort)
+        try {
+          await airtableUpdate('Stock Material', s.id, {
+            'Status': { name: 'Ordered' }
+          });
+        } catch(e2) {
+          // Status reset failed — not blocking
+        }
+        toast(`↩️ ${s.tag} — cleared`);
       }
-      toast(`↩️ ${s.tag} — cleared`);
     } catch(e) {
       toast(`Error on ${s.tag}: ${e.message}`, 'error');
     }
