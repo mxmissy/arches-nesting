@@ -2215,6 +2215,31 @@ function renderYardInventory(el) {
       let orderInfo = s.vendorOrderNumber ? `Order ${s.vendorOrderNumber}` : (s.poNumber ? `PO ${s.poNumber}` : '');
       let contextParts = [vendorInfo, orderInfo].filter(Boolean).join(' · ');
 
+      // Build action buttons
+      let actions = '';
+      if (hasDemand) {
+        // Jobs that need this size
+        let jobsNeedingSize = [...new Set(demandParts.map(p => p.job).filter(Boolean))].sort((a,b) => Number(a)-Number(b));
+        let jobOptions = jobsNeedingSize.map(j => `<option value="${escHtml(j)}">Job ${escHtml(j)}</option>`).join('');
+        actions = `
+          <button class="btn btn-sm" onclick="ydNestBeam('${s.id}')" style="font-size:11px;padding:2px 8px;background:#0D9488;color:white;border:none;margin-right:4px" title="Open in Beam → Parts">🪚 Nest</button>
+          <select onchange="if(this.value)ydAssignToJob('${s.id}',this.value);this.value=''" style="font-size:11px;padding:2px 4px;border:1px solid #D1D5DB;border-radius:4px;color:#374151;cursor:pointer">
+            <option value="">Assign →</option>
+            ${jobOptions}
+          </select>`;
+      } else {
+        // No demand for this size — only show assign option with all jobs that have unmatched parts
+        let allJobsWithParts = [...new Set(unmatchedParts.map(p => p.job).filter(Boolean))].sort((a,b) => Number(a)-Number(b));
+        if (allJobsWithParts.length > 0) {
+          let jobOptions = allJobsWithParts.map(j => `<option value="${escHtml(j)}">Job ${escHtml(j)}</option>`).join('');
+          actions = `
+            <select onchange="if(this.value)ydAssignToJob('${s.id}',this.value);this.value=''" style="font-size:11px;padding:2px 4px;border:1px solid #D1D5DB;border-radius:4px;color:#374151;cursor:pointer">
+              <option value="">Assign →</option>
+              ${jobOptions}
+            </select>`;
+        }
+      }
+
       return `<tr style="font-size:13px;border-bottom:1px solid #F3F4F6">
         <td style="padding:6px 8px;font-family:var(--font-mono);font-weight:600">${escHtml(s.tag)}</td>
         <td style="padding:6px 8px">${statusTag(s)}</td>
@@ -2222,6 +2247,7 @@ function renderYardInventory(el) {
         <td style="padding:6px 8px">${beamJobLabel(s)}</td>
         <td style="padding:6px 8px;color:#6B7280;font-size:12px">${contextParts || '—'}</td>
         <td style="padding:6px 8px;font-family:var(--font-mono);text-align:right">${s.totalCost ? '$' + s.totalCost.toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:0}) : '—'}</td>
+        <td style="padding:6px 8px;white-space:nowrap">${actions}</td>
       </tr>`;
     }).join('');
 
@@ -2251,6 +2277,7 @@ function renderYardInventory(el) {
                 <th style="padding:6px 8px;text-align:left">Job</th>
                 <th style="padding:6px 8px;text-align:left">Vendor / Order</th>
                 <th style="padding:6px 8px;text-align:right">Cost</th>
+                <th style="padding:6px 8px;text-align:left">Actions</th>
               </tr></thead>
               <tbody>${beamRows}</tbody>
             </table>
@@ -2307,6 +2334,26 @@ function expandAllYardGroups(open) {
   document.querySelectorAll('[id^="yd-arrow-"]').forEach(el => {
     el.style.transform = open ? 'rotate(90deg)' : 'rotate(0deg)';
   });
+}
+
+// Navigate to Beam → Parts with this beam pre-selected
+function ydNestBeam(stockId) {
+  let stock = DATA.stock.find(s => s.id === stockId);
+  if (!stock) { toast('Stock record not found', 'error'); return; }
+  // Pre-set the beam selection for Beam → Parts mode
+  window._preselectedBeam = stock;
+  navigateTo('beam');
+}
+
+// Assign beam to a job via Auto Nest
+function ydAssignToJob(stockId, jobNumber) {
+  if (!jobNumber) return;
+  let stock = DATA.stock.find(s => s.id === stockId);
+  if (!stock) { toast('Stock record not found', 'error'); return; }
+  // Set the job filter and navigate to Auto Nest
+  window._nestJobFilter = jobNumber;
+  toast(`Opening Auto Nest for Job ${jobNumber} — run optimization to include yard stock`);
+  navigateTo('autonest');
 }
 
 // ============================================================
@@ -2471,6 +2518,13 @@ function renderDashboard(el) {
     </div>`;
   }).join('');
 
+  // Count total unassigned yard stock (broader than getAvailableStock)
+  let totalYardUnassigned = DATA.stock.filter(s =>
+    (!s.assignedParts || s.assignedParts.length === 0) &&
+    s.lengthInches > 0 &&
+    !['On Hold','Quote Pending'].includes(s.status)
+  ).length;
+
   el.innerHTML = `
     <div class="stat-cards">
       <div class="stat-card accent">
@@ -2478,8 +2532,8 @@ function renderDashboard(el) {
         <div class="stat-card-label">Parts Need Assignment</div>
       </div>
       <div class="stat-card blue">
-        <div class="stat-card-value">${avail.length}</div>
-        <div class="stat-card-label">Stock Available</div>
+        <div class="stat-card-value">${avail.length} <span style="font-size:14px;font-weight:400;color:#6B7280">/ ${totalYardUnassigned}</span></div>
+        <div class="stat-card-label">Nestable / Total in Yard</div>
       </div>
       <div class="stat-card green">
         <div class="stat-card-value">${remnants.length}</div>
@@ -3704,6 +3758,22 @@ function renderBeamMode(el) {
       </div>
     </div>
     <div id="beam-results"></div>`;
+
+  // Pre-fill from Yard Stock page if a beam was pre-selected
+  if (window._preselectedBeam) {
+    let ps = window._preselectedBeam;
+    window._preselectedBeam = null;
+    setTimeout(() => {
+      let skInput = document.getElementById('beam-sizekey');
+      let ftInput = document.getElementById('beam-feet');
+      let inInput = document.getElementById('beam-inches');
+      if (skInput) skInput.value = ps.sizeKey || '';
+      if (ftInput) ftInput.value = ps.lengthFt || 40;
+      if (inInput) inInput.value = 0;
+      // Auto-run the search
+      findPartsForBeam();
+    }, 50);
+  }
 }
 
 function findPartsForBeam() {
