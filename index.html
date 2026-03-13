@@ -3161,6 +3161,8 @@ async function executeAutoNest() {
       let xfBtn = '';
       if (selectedJob && sp.remaining >= SETTINGS.minRemnant) {
         xfBtn = `<button class="xf-btn" onclick="checkBeamCrossFill(${groupIdx},${si})">🔀 Check cross-fill (${inchesToDisplay(sp.remaining)} available)</button>`;
+      } else if (!selectedJob && sp.remaining >= SETTINGS.minRemnant) {
+        xfBtn = `<span style="font-size:11px;color:#9CA3AF;margin-top:4px;display:inline-block">💡 Select a specific job to enable cross-fill (All Jobs already includes all parts)</span>`;
       }
       barsHtml += `
         <div class="nest-stick-row" data-stick-id="${stickId}">
@@ -3240,8 +3242,9 @@ async function executeAutoNest() {
         // Cross-fill button for Phase 2 beams with remnant space
         let xfBtn = '';
         if (selectedJob && sp.remaining >= SETTINGS.minRemnant) {
-          // Use a special p2 cross-fill function; p2ResultIdx is set after push
           xfBtn = `<button class="xf-btn" onclick="checkP2CrossFill(${phase2Results.length - 1},${si})">🔀 Check cross-fill (${inchesToDisplay(sp.remaining)} available)</button>`;
+        } else if (!selectedJob && sp.remaining >= SETTINGS.minRemnant) {
+          xfBtn = `<span style="font-size:11px;color:#9CA3AF;margin-top:4px;display:inline-block">💡 Select a specific job to enable cross-fill</span>`;
         }
         barsHtml += `
           <div class="nest-stick-row" data-stick-id="p2-${phase2Results.length - 1}-${si}" style="margin-bottom:10px">
