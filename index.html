@@ -2702,6 +2702,87 @@ async function executeAutoNest() {
       }
     }
     let stillUnnested = unmatched.filter(p => !nestedPartIds.has(p.id));
+
+    // Show surplus stock summary — unassigned beams on this job that don't match remaining parts
+    let normSK = s => (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
+    let neededSizeKeys = new Set(stillUnnested.map(p => normSK(p.sizeKey)));
+    // Also include size keys that WERE nested (those beams are used, not surplus)
+    let nestedSizeKeys = new Set();
+    for (let r of allResults) {
+      nestedSizeKeys.add(normSK(r.sizeKey));
+    }
+
+    // Find all stock on this job that is unassigned
+    let jobStock = avail.filter(s => {
+      // Check if this beam belongs to the selected job
+      if (s.jobLink && s.jobLink.length > 0) {
+        // Resolve job number from the job record ID
+        let jobRecId = s.jobLink[0];
+        // Find any assigned stock on this job to get the record ID mapping
+        let knownJobBeam = DATA.stock.find(ss => {
+          if (!ss.jobLink || ss.jobLink.length === 0) return false;
+          if (ss.assignedParts && ss.assignedParts.length > 0) {
+            let pid = typeof ss.assignedParts[0] === 'object' ? ss.assignedParts[0].id : ss.assignedParts[0];
+            let part = DATA.parts.find(pp => pp.id === pid);
+            return part && part.job === selectedJob && ss.jobLink[0] === jobRecId;
+          }
+          return false;
+        });
+        // If we can't confirm this beam is on the selected job via parts, try matching record IDs
+        // with other beams we know are on this job
+        if (!knownJobBeam) {
+          // Check if ANY beam with this same jobLink[0] has parts on selectedJob
+          let sameJobBeams = DATA.stock.filter(ss => ss.jobLink && ss.jobLink.length > 0 && ss.jobLink[0] === jobRecId);
+          for (let sjb of sameJobBeams) {
+            if (sjb.assignedParts && sjb.assignedParts.length > 0) {
+              let pid = typeof sjb.assignedParts[0] === 'object' ? sjb.assignedParts[0].id : sjb.assignedParts[0];
+              let part = DATA.parts.find(pp => pp.id === pid);
+              if (part && part.job === selectedJob) { knownJobBeam = sjb; break; }
+            }
+          }
+        }
+        return !!knownJobBeam;
+      }
+      return false;
+    });
+
+    // Filter to surplus: unassigned beams whose size key doesn't match any remaining parts
+    let surplusBeams = jobStock.filter(s => !neededSizeKeys.has(normSK(s.sizeKey)));
+
+    if (surplusBeams.length > 0) {
+      // Group by size key
+      let surplusBySize = {};
+      let totalSurplusValue = 0;
+      for (let s of surplusBeams) {
+        let sk = s.sizeKey || 'UNKNOWN';
+        if (!surplusBySize[sk]) surplusBySize[sk] = [];
+        surplusBySize[sk].push(s);
+        totalSurplusValue += (s.totalCost || s.unitCost || 0);
+      }
+      let sizeSummary = Object.entries(surplusBySize)
+        .sort((a,b) => b[1].length - a[1].length)
+        .map(([sk, beams]) => `<span style="background:#F0FDFA;border:1px solid #99F6E4;padding:2px 8px;border-radius:4px;font-size:12px;display:inline-block;margin:2px"><strong>${escHtml(sk)}</strong>: ${beams.length} beam${beams.length!==1?'s':''}</span>`)
+        .join(' ');
+      let valueStr = totalSurplusValue > 0 ? ` · $${totalSurplusValue.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2})} in idle material` : '';
+
+      resultsEl.insertAdjacentHTML('beforeend', `
+        <div style="margin-top:16px;border:2px solid #99F6E4;border-radius:8px;overflow:hidden">
+          <div style="background:#F0FDFA;padding:12px 16px;border-bottom:1px solid #99F6E4">
+            <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+              <div>
+                <span style="font-size:16px">📦</span>
+                <strong style="color:#0D9488;font-size:14px">Surplus Stock on Job ${escHtml(selectedJob)}</strong>
+                <span style="color:#6B7280;font-size:13px"> — ${surplusBeams.length} unassigned beam${surplusBeams.length!==1?'s':''} with no matching parts${valueStr}</span>
+              </div>
+            </div>
+          </div>
+          <div style="padding:12px 16px">
+            <div style="line-height:2">${sizeSummary}</div>
+            <p style="font-size:12px;color:#6B7280;margin-top:8px">These beams are ordered for this job but no remaining parts need them. Other jobs can pull them via Yard Stock Search.</p>
+          </div>
+        </div>`);
+    }
+
     if (stillUnnested.length > 0) {
       renderYardStockButton(stillUnnested);
     }
