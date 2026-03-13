@@ -1864,6 +1864,139 @@ function cancelBeamCrossFill(groupIdx, stickIdx) {
   if (window._crossFillCandidates) delete window._crossFillCandidates[`${groupIdx}-${stickIdx}`];
 }
 
+// Phase 2 cross-fill — same logic but against _phase2Results
+function checkP2CrossFill(p2ResultIdx, stickIdx) {
+  let p2Results = window._phase2Results;
+  if (!p2Results || !p2Results[p2ResultIdx]) return;
+  let sp = p2Results[p2ResultIdx].result.usedStock[stickIdx];
+  if (!sp) return;
+
+  let selectedJob = window._nestJobFilter || '';
+  let remainingInches = sp.remaining;
+  if (remainingInches < 12) { toast('Not enough space', 'warning'); return; }
+
+  let normSK = s => (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
+  let beamSizeKey = normSK(p2Results[p2ResultIdx].sizeKey);
+
+  let allUnmatched = getUnmatchedParts();
+  let candidates = allUnmatched.filter(p => {
+    if (selectedJob && p.job === selectedJob) return false;
+    if (!p.job) return false;
+    if (normSK(p.sizeKey) !== beamSizeKey) return false;
+    if (p.cutInches + SETTINGS.kerf > remainingInches) return false;
+    return true;
+  });
+
+  // Exclude parts already in cross-fills
+  let usedCrossIds = new Set();
+  if (window._autoNestResults) {
+    for (let r of window._autoNestResults) {
+      for (let s of r.result.usedStock) {
+        if (s.crossFills) for (let cf of s.crossFills) usedCrossIds.add(cf.id);
+      }
+    }
+  }
+  for (let r of p2Results) {
+    for (let s of r.result.usedStock) {
+      if (s.crossFills) for (let cf of s.crossFills) usedCrossIds.add(cf.id);
+    }
+  }
+  candidates = candidates.filter(p => !usedCrossIds.has(p.id));
+
+  let key = `p2-${p2ResultIdx}-${stickIdx}`;
+  let panelId = `xf-panel-p2-${p2ResultIdx}-${stickIdx}`;
+  let existing = document.getElementById(panelId);
+  if (existing) existing.remove();
+
+  if (candidates.length === 0) {
+    let stickRow = document.querySelector(`[data-stick-id="${key}"]`);
+    if (stickRow) stickRow.insertAdjacentHTML('afterend', `<div id="${panelId}" class="xf-panel" style="margin-left:32px"><div style="font-size:13px;color:#6B7280">No parts from other jobs fit the remaining ${inchesToDisplay(remainingInches)}.</div></div>`);
+    return;
+  }
+
+  let bestIndices = knapsackBestSubset(
+    candidates.map(p => ({ cutInches: p.cutInches + SETTINGS.kerf, partId: p.partId, id: p.id })),
+    remainingInches
+  );
+  if (bestIndices.length === 0) { toast('No combination fits', 'warning'); return; }
+  let bestParts = bestIndices.map(i => candidates[i]);
+
+  if (!window._crossFillCandidates) window._crossFillCandidates = {};
+  window._crossFillCandidates[key] = { parts: bestParts, checked: new Set(bestParts.map(p => p.id)) };
+
+  let partsHtml = bestParts.map(p => `<div class="xf-part-row">
+    <input type="checkbox" checked onchange="xfToggleP2Part(${p2ResultIdx},${stickIdx},'${p.id}')">
+    <span class="xf-job-chip">J${escHtml(p.job)}</span>
+    <span class="mono" style="font-weight:600">${escHtml(p.partId)}</span>
+    <span class="mono" style="font-size:12px">${inchesToDisplay(p.cutInches)}</span>
+  </div>`).join('');
+
+  let usedByChecked = bestParts.reduce((sum, p) => sum + p.cutInches + SETTINGS.kerf, 0);
+  let afterFill = remainingInches - usedByChecked;
+
+  let stickRow = document.querySelector(`[data-stick-id="${key}"]`);
+  if (stickRow) stickRow.insertAdjacentHTML('afterend', `
+    <div id="${panelId}" class="xf-panel" style="margin-left:32px">
+      <div style="font-size:13px;font-weight:600;color:#F97316;margin-bottom:6px">🔀 Cross-Job Fill — ${bestParts.length} part${bestParts.length!==1?'s':''} from other jobs can share this order</div>
+      ${partsHtml}
+      <div style="font-size:12px;color:#6B7280;margin-top:6px">Space after fill: ${inchesToDisplay(Math.max(0, afterFill))} ${afterFill >= SETTINGS.minRemnant ? '→ REMNANT' : afterFill > 1 ? '→ SCRAP' : ''}</div>
+      <div class="xf-actions">
+        <button class="xf-btn-approve" onclick="approveP2CrossFill(${p2ResultIdx},${stickIdx})">✅ Add checked parts</button>
+        <button class="xf-btn-cancel" onclick="cancelP2CrossFill(${p2ResultIdx},${stickIdx})">✗ Cancel</button>
+      </div>
+    </div>`);
+}
+
+function xfToggleP2Part(p2ResultIdx, stickIdx, partId) {
+  let key = `p2-${p2ResultIdx}-${stickIdx}`;
+  let data = window._crossFillCandidates && window._crossFillCandidates[key];
+  if (!data) return;
+  if (data.checked.has(partId)) data.checked.delete(partId);
+  else data.checked.add(partId);
+}
+
+function approveP2CrossFill(p2ResultIdx, stickIdx) {
+  let key = `p2-${p2ResultIdx}-${stickIdx}`;
+  let data = window._crossFillCandidates && window._crossFillCandidates[key];
+  if (!data) return;
+  let sp = window._phase2Results[p2ResultIdx].result.usedStock[stickIdx];
+  if (!sp) return;
+
+  let approvedParts = data.parts.filter(p => data.checked.has(p.id));
+  if (approvedParts.length === 0) { toast('No parts checked', 'warning'); return; }
+
+  if (!sp.crossFills) sp.crossFills = [];
+  for (let p of approvedParts) {
+    sp.crossFills.push({ id: p.id, partId: p.partId, cutInches: p.cutInches, job: p.job, sizeKey: p.sizeKey });
+    sp.remaining -= (p.cutInches + SETTINGS.kerf);
+  }
+  if (sp.remaining < 0) sp.remaining = 0;
+
+  let panel = document.getElementById(`xf-panel-p2-${p2ResultIdx}-${stickIdx}`);
+  if (panel) panel.remove();
+
+  let stickRow = document.querySelector(`[data-stick-id="${key}"]`);
+  if (stickRow) {
+    let barWrap = stickRow.querySelector('.stick-bar-wrap');
+    if (barWrap) {
+      barWrap.innerHTML = renderBarDiagram(sp);
+      barWrap.insertAdjacentHTML('beforeend', `<div style="font-size:12px;color:#F97316;font-weight:600;margin-top:4px">🔀 ${approvedParts.length} cross-fill part${approvedParts.length!==1?'s':''} added (${approvedParts.map(p => p.partId + ' J' + p.job).join(', ')})</div>`);
+    }
+    if (sp.remaining >= 12) {
+      stickRow.insertAdjacentHTML('afterend', `<div style="margin-left:32px;margin-top:4px"><button class="xf-btn" onclick="checkP2CrossFill(${p2ResultIdx},${stickIdx})">🔀 Check again (${inchesToDisplay(sp.remaining)} left)</button></div>`);
+    }
+  }
+
+  delete window._crossFillCandidates[key];
+  toast(`✅ ${approvedParts.length} cross-fill part(s) will share this order`);
+}
+
+function cancelP2CrossFill(p2ResultIdx, stickIdx) {
+  let panel = document.getElementById(`xf-panel-p2-${p2ResultIdx}-${stickIdx}`);
+  if (panel) panel.remove();
+  if (window._crossFillCandidates) delete window._crossFillCandidates[`p2-${p2ResultIdx}-${stickIdx}`];
+}
+
 function getSizeKeyGroups(parts) {
   let groups = {};
   for (let p of parts) {
@@ -3101,14 +3234,21 @@ async function executeAutoNest() {
       totalStocksToOrder += result.usedStock.length;
 
       let barsHtml = '';
+      let p2ResultIdx = phase2Results.length - 1;
       for (let si = 0; si < result.usedStock.length; si++) {
         let sp = result.usedStock[si];
+        // Cross-fill button for Phase 2 beams with remnant space
+        let xfBtn = '';
+        if (selectedJob && sp.remaining >= SETTINGS.minRemnant) {
+          // Use a special p2 cross-fill function; p2ResultIdx is set after push
+          xfBtn = `<button class="xf-btn" onclick="checkP2CrossFill(${phase2Results.length - 1},${si})">🔀 Check cross-fill (${inchesToDisplay(sp.remaining)} available)</button>`;
+        }
         barsHtml += `
-          <div class="nest-stick-row" style="margin-bottom:10px">
+          <div class="nest-stick-row" data-stick-id="p2-${phase2Results.length - 1}-${si}" style="margin-bottom:10px">
             <label class="stick-select" title="Select this stick for PO">
               <input type="checkbox" class="p2-stick-chk" data-p2idx="${p2GlobalIdx}" checked onchange="updateP2SelectionCount()">
             </label>
-            <div class="stick-bar-wrap">${renderBarDiagram(sp)}</div>
+            <div class="stick-bar-wrap">${renderBarDiagram(sp)}${xfBtn ? `<div style="margin-top:4px">${xfBtn}</div>` : ''}</div>
           </div>`;
         p2GlobalIdx++;
       }
@@ -3515,6 +3655,43 @@ async function markPartsForPO() {
         } else {
           console.warn('[PO] Part has no Airtable id:', p.partId);
         }
+      }
+
+      // Link cross-fill parts from other jobs to the same stock record
+      if (sp.crossFills && sp.crossFills.length > 0) {
+        for (let cf of sp.crossFills) {
+          if (cf.id) {
+            try {
+              console.log('[PO] Linking cross-fill part', cf.partId, '(J' + cf.job + ') → stock', newStock.id);
+              await airtableUpdate('Parts', cf.id, { 'Stock Material': [newStock.id] });
+              linked++;
+            } catch(e) {
+              console.error('[PO] Cross-fill link error:', cf.partId, e.message);
+              errors.push(`CF Link ${cf.partId}: ${e.message}`);
+            }
+          }
+        }
+      }
+
+      // Build saw instructions including cross-fills
+      let sawParts = sp.parts.map(p => `CF:${inchesToShortFeet(p.cutInches)}`);
+      if (sp.crossFills && sp.crossFills.length > 0) {
+        for (let cf of sp.crossFills) {
+          sawParts.push(`CF:${inchesToShortFeet(cf.cutInches)}(J${cf.job})`);
+        }
+      }
+      let dropInches = sp.remaining;
+      let sawInstruction = sawParts.join(' ');
+      if (dropInches >= SETTINGS.minRemnant) {
+        sawInstruction += ` | DROP:${inchesToDisplay(dropInches)} -> SAVE REMNANT`;
+      } else if (dropInches > 1) {
+        sawInstruction += ` | DROP:${inchesToDisplay(dropInches)} -> SCRAP`;
+      }
+      // Update stock record with saw instructions
+      try {
+        await airtableUpdate('Stock Material', newStock.id, { 'Saw Instructions': sawInstruction });
+      } catch(e) {
+        console.warn('[PO] Could not set saw instructions:', e.message);
       }
     } catch(e) {
       console.error('[PO] Create stock error:', sizeKey, e.message);
