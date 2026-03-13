@@ -2656,7 +2656,7 @@ async function executeAutoNest() {
   if (hasPhase2) {
     html += `<div id="nest-tab-order" style="display:${hasPhase1 ? 'none' : 'block'}">
       <p class="text-muted" style="text-align:center;margin:12px 0 8px">
-        \${SETTINGS.shortBeamBonus > 0 ? "Prefers beams " + (SETTINGS.minPreferredLength/12) + "' – " + (SETTINGS.maxPreferredLength/12) + "'. Beams outside range only win if significantly more efficient." : "Optimal stock lengths to order (10'–60' in 5' increments)."}
+        ${SETTINGS.shortBeamBonus > 0 ? "Prefers beams " + (SETTINGS.minPreferredLength/12) + "' – " + (SETTINGS.maxPreferredLength/12) + "'. Beams outside range only win if significantly more efficient." : "Optimal stock lengths to order (10'–60' in 5' increments)."}
       </p>
       ${phase2Cards}
       <div class="card phase2-card" style="position:sticky;bottom:0;z-index:10;border-top:2px solid #1565C0;margin-top:4px">
