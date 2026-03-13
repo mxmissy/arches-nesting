@@ -728,6 +728,144 @@ body {
   color: var(--clr-text-secondary);
 }
 .empty-state .icon { font-size: 36px; margin-bottom: 8px; }
+
+/* ============================================================
+   YARD STOCK SEARCH — Teal color scheme
+   ============================================================ */
+.ys-button {
+  background: #0D9488;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 12px 24px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 16px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  transition: background 0.15s;
+}
+.ys-button:hover { background: #0F766E; }
+.ys-button:disabled { opacity: 0.5; cursor: not-allowed; }
+.ys-button-sub {
+  font-size: 12px;
+  font-weight: 400;
+  color: #D1FAE5;
+  margin-left: 4px;
+}
+
+.ys-results-wrap {
+  margin-top: 16px;
+  border: 2px solid #5EEAD4;
+  border-radius: 8px;
+  overflow: hidden;
+}
+.ys-results-header {
+  background: #0D9488;
+  color: white;
+  padding: 10px 16px;
+  font-weight: 700;
+  font-size: 14px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.ys-results-body {
+  background: #F0FDFA;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.ys-card {
+  background: white;
+  border: 1px solid #99F6E4;
+  border-radius: 8px;
+  padding: 12px 16px;
+}
+.ys-card.approved {
+  background: #F0FDF4;
+  border-color: #86EFAC;
+}
+.ys-card.rejected {
+  display: none;
+}
+.ys-beam-label {
+  font-weight: 700;
+  font-size: 14px;
+  color: #0D9488;
+}
+.ys-source-job {
+  font-size: 12px;
+  color: #6B7280;
+  margin-top: 2px;
+  margin-bottom: 8px;
+}
+.ys-part-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-size: 13px;
+  padding: 3px 0;
+}
+.ys-part-row input[type="checkbox"] { margin: 0; }
+.ys-remaining {
+  font-size: 12px;
+  color: #6B7280;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px dashed #D1D5DB;
+}
+.ys-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+.ys-btn-approve {
+  background: #16A34A;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ys-btn-approve:hover { background: #15803D; }
+.ys-btn-skip {
+  background: #E5E7EB;
+  color: #374151;
+  border: none;
+  border-radius: 5px;
+  padding: 6px 14px;
+  font-size: 13px;
+  cursor: pointer;
+}
+.ys-btn-skip:hover { background: #D1D5DB; }
+.ys-approved-badge {
+  color: #16A34A;
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 8px;
+}
+
+.bar-segment.yard-stock {
+  background: repeating-linear-gradient(
+    45deg, #0D9488, #0D9488 4px, #99F6E4 4px, #99F6E4 8px
+  );
+  position: relative;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+
+.ys-no-results {
+  text-align: center;
+  padding: 20px;
+  color: #6B7280;
+  font-size: 14px;
+}
 </style>
 </head>
 
@@ -1004,7 +1142,7 @@ async function loadData() {
   try {
     let [stockRaw, partsRaw, remnantsRaw, deliveriesRaw] = await Promise.all([
       airtableFetchAll('Stock Material', {
-        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery','PO Number','Vendor','Expected Delivery']
+        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery','PO Number','Vendor','Expected Delivery','Unit Cost','Total Cost','Job']
       }),
       airtableFetchAll('Parts', {
         fields: ['Part ID','Size Key','Cut Length','Stock Material','Material Ordered','Job Number','Material Type','Material Size','Select for PO','Pending Delivery']
@@ -1034,6 +1172,9 @@ async function loadData() {
       poNumber: r.fields['PO Number'] || '',
       vendor: r.fields['Vendor'] ? (typeof r.fields['Vendor'] === 'object' ? r.fields['Vendor'].name : r.fields['Vendor']) : '',
       expectedDelivery: r.fields['Expected Delivery'] || '',
+      unitCost: r.fields['Unit Cost'] || 0,
+      totalCost: r.fields['Total Cost'] || 0,
+      jobLink: Array.isArray(r.fields['Job']) ? r.fields['Job'] : (r.fields['Job'] ? [r.fields['Job']] : []),
       _raw: r
     }));
 
@@ -1118,6 +1259,403 @@ function getNestedStock() {
     s.assignedParts && s.assignedParts.length > 0 &&
     s.sawInstructions && s.sawInstructions.includes('CF:')
   );
+}
+
+// ============================================================
+// YARD STOCK SEARCH — Pull beams from other jobs
+// ============================================================
+
+// Fetch unassigned stock across ALL jobs matching given size keys
+async function loadYardStock(sizeKeys, excludeJob) {
+  let normSK = s => (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
+  let targetKeys = new Set(sizeKeys.map(normSK));
+
+  // Filter from already-loaded DATA.stock — no extra API call needed
+  // Beams must be: unassigned, physical (in yard), not current job, matching size
+  let candidates = DATA.stock.filter(s => {
+    if (!targetKeys.has(normSK(s.sizeKey))) return false;
+    if (s.assignedParts && s.assignedParts.length > 0) return false;
+    if (!['Ordered','Received','Label Printed','In Fabrication'].includes(s.status)) return false;
+    if (s.lengthInches <= 0) return false;
+    // Exclude beams already assigned to the current job
+    if (excludeJob) {
+      // Check if the beam's job matches the excluded job number
+      // jobLink is an array of record IDs — we need to resolve via parts' job numbers
+      // Simpler: check if any part on this beam belongs to excludeJob — but beam has no parts (unassigned)
+      // So we check the stock's job link by cross-referencing DATA.parts
+      // Actually, we need to figure out which job this beam belongs to.
+      // The stock record's jobLink has the record ID, but we need job number.
+      // Let's resolve job numbers from loaded data.
+    }
+    return true;
+  });
+
+  // Resolve job numbers for each candidate beam
+  // Build a map of job record ID → job number from parts data
+  let jobIdToNumber = {};
+  for (let p of DATA.parts) {
+    if (p._raw && p._raw.fields && p._raw.fields['Job Number']) {
+      // Job Number can be a lookup (array) or text
+      let jn = p.job; // already processed
+      // Get the job linked record ID if available
+      // Parts don't have job record ID directly, but Stock Material has Job link
+    }
+  }
+
+  // Better approach: for each stock beam, we know its jobLink (array of record IDs).
+  // We need to map those record IDs to job numbers.
+  // Build the map by scanning ALL stock that HAS assigned parts — those parts have job numbers.
+  // But for unassigned stock, the Job field on Stock Material is the direct link.
+  // We can resolve by checking: for beams with a Job link, find any part in that job.
+  let jobRecIdToNumber = {};
+  for (let p of DATA.parts) {
+    if (p.job && p._raw && p._raw.fields['Stock Material']) {
+      let smIds = Array.isArray(p._raw.fields['Stock Material']) ? p._raw.fields['Stock Material'] : [];
+      for (let smId of smIds) {
+        let stk = DATA.stock.find(s => s.id === smId);
+        if (stk && stk.jobLink.length > 0) {
+          jobRecIdToNumber[stk.jobLink[0]] = p.job;
+        }
+      }
+    }
+  }
+  // Also scan parts directly for job record ID mapping
+  // Since parts have job as text, and some stock has Job link, try to build from any stock with parts
+  for (let s of DATA.stock) {
+    if (s.jobLink.length > 0 && s.assignedParts && s.assignedParts.length > 0) {
+      let partId = typeof s.assignedParts[0] === 'object' ? s.assignedParts[0].id : s.assignedParts[0];
+      let part = DATA.parts.find(p => p.id === partId);
+      if (part && part.job) {
+        jobRecIdToNumber[s.jobLink[0]] = part.job;
+      }
+    }
+  }
+
+  // Now filter out beams belonging to the excluded job and annotate with source job
+  candidates = candidates.filter(s => {
+    if (s.jobLink.length > 0) {
+      let jobNum = jobRecIdToNumber[s.jobLink[0]] || '';
+      s._sourceJobNumber = jobNum;
+      s._sourceJobRecordId = s.jobLink[0];
+      return jobNum !== excludeJob;
+    }
+    // Beams with no job link are unassigned yard stock — always available
+    s._sourceJobNumber = '';
+    s._sourceJobRecordId = '';
+    return true;
+  });
+
+  return candidates;
+}
+
+// Run the optimizer against yard stock pool for unnested parts
+function runYardStockOptimizer(unnestedParts, yardStock) {
+  let normSK = s => (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
+  let groups = {};
+  for (let p of unnestedParts) {
+    let k = normSK(p.sizeKey);
+    if (!groups[k]) groups[k] = [];
+    groups[k].push(p);
+  }
+
+  let suggestions = [];
+  let suggIdx = 0;
+
+  for (let [sizeKeyNorm, parts] of Object.entries(groups)) {
+    // Find yard beams matching this size key
+    let beams = yardStock.filter(s => normSK(s.sizeKey) === sizeKeyNorm);
+    if (beams.length === 0) continue;
+
+    // Sort parts longest first for better packing
+    parts.sort((a, b) => b.cutInches - a.cutInches);
+
+    // For each beam, find best subset of parts that fit
+    for (let beam of beams) {
+      let usable = beam.lengthInches - SETTINGS.endTrim - SETTINGS.safetyMargin;
+      if (usable <= 0) continue;
+
+      // Account for kerf between parts
+      let partsWithKerf = parts.map(p => ({
+        ...p,
+        effectiveLength: p.cutInches + SETTINGS.kerf
+      }));
+
+      let bestIndices = knapsackBestSubset(
+        partsWithKerf.map(p => ({ cutInches: p.effectiveLength, partId: p.partId, id: p.id })),
+        beam.lengthInches - SETTINGS.endTrim
+      );
+
+      if (bestIndices.length === 0) continue;
+
+      let nestedParts = bestIndices.map(i => parts[i]);
+      let usedInches = nestedParts.reduce((sum, p) => sum + p.cutInches + SETTINGS.kerf, 0);
+      let remainingInches = beam.lengthInches - SETTINGS.endTrim - usedInches;
+      let disposition = remainingInches >= SETTINGS.minRemnant ? 'SAVE REMNANT' : (remainingInches > 1 ? 'SCRAP' : '');
+
+      suggestions.push({
+        id: `ys-${suggIdx++}`,
+        beam: beam,
+        sourceJobNumber: beam._sourceJobNumber || 'Unassigned',
+        sourceJobRecordId: beam._sourceJobRecordId || '',
+        sizeKey: beam.sizeKey,
+        beamLengthInches: beam.lengthInches,
+        nestedParts: nestedParts,
+        usedInches: usedInches,
+        remainingInches: remainingInches,
+        disposition: disposition,
+        approved: false,
+        rejected: false,
+        _checkedParts: new Set(nestedParts.map(p => p.id)) // all checked by default
+      });
+
+      // Remove nested parts from the pool so they aren't double-suggested
+      let nestedIds = new Set(nestedParts.map(p => p.id));
+      parts = parts.filter(p => !nestedIds.has(p.id));
+
+      if (parts.length === 0) break;
+    }
+  }
+
+  return suggestions;
+}
+
+// Render the "Check Yard Stock" button
+function renderYardStockButton(unnestedParts) {
+  let resultsEl = document.getElementById('autonest-results');
+  if (!resultsEl) return;
+
+  let sizeKeys = [...new Set(unnestedParts.map(p => p.sizeKey))];
+  let btn = document.createElement('div');
+  btn.id = 'ys-button-wrap';
+  btn.innerHTML = `
+    <button class="ys-button" id="btn-check-yard" onclick="onCheckYardStock()">
+      🏗️ Check Yard Stock
+      <span class="ys-button-sub">— search all jobs for beams that fit ${unnestedParts.length} remaining part${unnestedParts.length !== 1 ? 's' : ''}</span>
+    </button>`;
+  resultsEl.appendChild(btn);
+}
+
+// Handle the button click
+async function onCheckYardStock() {
+  let btn = document.getElementById('btn-check-yard');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.innerHTML = '⏳ Searching yard stock...';
+
+  let selectedJob = window._nestJobFilter || '';
+
+  // Get unnested parts (parts still without stock after Phase 1)
+  let allUnmatched = getUnmatchedParts();
+  let unmatched = selectedJob ? allUnmatched.filter(p => p.job === selectedJob) : allUnmatched;
+
+  // Also include Phase 1 unassigned (parts that didn't fit on job stock)
+  let phase1Unassigned = [];
+  if (window._autoNestResults) {
+    for (let r of window._autoNestResults) {
+      if (r.result.unassigned) phase1Unassigned.push(...r.result.unassigned);
+    }
+  }
+  // Also include Phase 2 leftovers
+  let phase2Parts = [];
+  if (window._phase2Leftovers) {
+    for (let group of window._phase2Leftovers) {
+      phase2Parts.push(...group.parts);
+    }
+  }
+
+  // Combine: unmatched parts that aren't already nested
+  let nestedPartIds = new Set();
+  if (window._autoNestResults) {
+    for (let r of window._autoNestResults) {
+      for (let sp of r.result.usedStock) {
+        for (let p of sp.parts) nestedPartIds.add(p.id);
+      }
+    }
+  }
+  let unnested = unmatched.filter(p => !nestedPartIds.has(p.id));
+
+  if (unnested.length === 0) {
+    btn.innerHTML = '✅ All parts are nested!';
+    return;
+  }
+
+  let sizeKeys = [...new Set(unnested.map(p => p.sizeKey))];
+
+  try {
+    let yardStock = await loadYardStock(sizeKeys, selectedJob);
+    let suggestions = runYardStockOptimizer(unnested, yardStock);
+
+    window._yardStockSuggestions = suggestions;
+
+    // Remove the button and render results
+    let wrap = document.getElementById('ys-button-wrap');
+    if (wrap) wrap.remove();
+
+    if (suggestions.length === 0) {
+      let resultsEl = document.getElementById('autonest-results');
+      if (resultsEl) {
+        resultsEl.insertAdjacentHTML('beforeend', `
+          <div class="ys-results-wrap">
+            <div class="ys-results-header">🏗️ Yard Stock Search</div>
+            <div class="ys-no-results">No matching yard stock found for remaining parts. All available beams from other jobs are either the wrong size or already assigned.</div>
+          </div>`);
+      }
+      return;
+    }
+
+    renderYardStockResults(suggestions);
+
+  } catch(e) {
+    toast(`Yard stock search failed: ${e.message}`, 'error');
+    btn.disabled = false;
+    btn.innerHTML = '🏗️ Check Yard Stock (retry)';
+  }
+}
+
+// Render yard stock suggestion cards
+function renderYardStockResults(suggestions) {
+  let resultsEl = document.getElementById('autonest-results');
+  if (!resultsEl) return;
+
+  let totalBeams = suggestions.length;
+  let totalParts = suggestions.reduce((s, sg) => s + sg.nestedParts.length, 0);
+
+  let cardsHtml = suggestions.map(sg => {
+    let partsHtml = sg.nestedParts.map(p => {
+      let checked = sg._checkedParts.has(p.id) ? 'checked' : '';
+      return `<div class="ys-part-row">
+        <input type="checkbox" ${checked} onchange="ysTogglePart('${sg.id}','${p.id}')">
+        <span class="mono" style="font-weight:600">${escHtml(p.partId)}</span>
+        <span class="mono" style="font-size:12px;color:#6B7280">${escHtml(p.sizeKey)}</span>
+        <span class="mono" style="font-size:12px">${inchesToDisplay(p.cutInches)}</span>
+      </div>`;
+    }).join('');
+
+    let remainDisp = sg.remainingInches > 0
+      ? `Remaining: ${inchesToDisplay(sg.remainingInches)} → ${sg.disposition}`
+      : 'Full utilization';
+
+    let sourceLabel = sg.sourceJobNumber && sg.sourceJobNumber !== 'Unassigned'
+      ? `Currently assigned to: Job ${escHtml(sg.sourceJobNumber)}`
+      : 'Unassigned yard stock';
+
+    return `<div class="ys-card" id="ys-card-${sg.id}">
+      <div class="ys-beam-label">🏗️ ${escHtml(sg.beam.tag)} · ${escHtml(sg.sizeKey)} · ${inchesToDisplay(sg.beamLengthInches)}</div>
+      <div class="ys-source-job">${sourceLabel}</div>
+      ${partsHtml}
+      <div class="ys-remaining">${remainDisp}</div>
+      <div class="ys-actions" id="ys-actions-${sg.id}">
+        <button class="ys-btn-approve" onclick="approveYardStock('${sg.id}')">✅ Transfer & Nest</button>
+        <button class="ys-btn-skip" onclick="rejectYardStock('${sg.id}')">✗ Skip</button>
+      </div>
+    </div>`;
+  }).join('');
+
+  let html = `
+    <div class="ys-results-wrap" id="ys-results-panel">
+      <div class="ys-results-header">
+        🏗️ Yard Stock Found
+        <span style="font-size:12px;font-weight:400">${totalBeams} beam${totalBeams !== 1 ? 's' : ''} · ${totalParts} parts can be nested</span>
+      </div>
+      <div class="ys-results-body">
+        ${cardsHtml}
+      </div>
+    </div>`;
+
+  resultsEl.insertAdjacentHTML('beforeend', html);
+}
+
+// Toggle a part checkbox in a yard stock suggestion
+function ysTogglePart(suggId, partId) {
+  let sg = (window._yardStockSuggestions || []).find(s => s.id === suggId);
+  if (!sg) return;
+  if (sg._checkedParts.has(partId)) {
+    sg._checkedParts.delete(partId);
+  } else {
+    sg._checkedParts.add(partId);
+  }
+}
+
+// Approve a yard stock transfer
+function approveYardStock(suggId) {
+  let sg = (window._yardStockSuggestions || []).find(s => s.id === suggId);
+  if (!sg) return;
+
+  // Only keep checked parts
+  sg.nestedParts = sg.nestedParts.filter(p => sg._checkedParts.has(p.id));
+  if (sg.nestedParts.length === 0) {
+    toast('No parts selected — uncheck parts you don\'t want, or click Skip', 'warning');
+    return;
+  }
+
+  // Recalculate remaining
+  sg.usedInches = sg.nestedParts.reduce((sum, p) => sum + p.cutInches + SETTINGS.kerf, 0);
+  sg.remainingInches = sg.beamLengthInches - SETTINGS.endTrim - sg.usedInches;
+  sg.disposition = sg.remainingInches >= SETTINGS.minRemnant ? 'SAVE REMNANT' : (sg.remainingInches > 1 ? 'SCRAP' : '');
+  sg.approved = true;
+
+  // Build a stock piece object for bar diagram rendering
+  let sp = {
+    type: 'stock',
+    id: sg.beam.tag,
+    totalLength: sg.beamLengthInches,
+    usable: sg.beamLengthInches - SETTINGS.endTrim,
+    record: sg.beam,
+    parts: sg.nestedParts,
+    remaining: sg.remainingInches
+  };
+
+  // Update card UI
+  let card = document.getElementById(`ys-card-${suggId}`);
+  if (card) {
+    card.classList.add('approved');
+    let actionsEl = document.getElementById(`ys-actions-${suggId}`);
+    if (actionsEl) {
+      actionsEl.innerHTML = `<div class="ys-approved-badge">✅ Approved — will transfer on confirm</div>`;
+    }
+    // Add bar diagram
+    let barHtml = renderBarDiagram(sp);
+    // Replace the bar segment colors with teal for yard stock
+    barHtml = barHtml.replace(/class="bar-segment part"/g, 'class="bar-segment yard-stock"');
+    let barDiv = document.createElement('div');
+    barDiv.style.marginTop = '10px';
+    barDiv.innerHTML = barHtml;
+    card.appendChild(barDiv);
+  }
+
+  // Store for confirmAutoNest
+  if (!window._yardStockApprovals) window._yardStockApprovals = [];
+  window._yardStockApprovals.push(sg);
+
+  // Update the confirm button count if it exists
+  updateYardStockConfirmCount();
+
+  toast(`✅ ${sg.beam.tag} approved for transfer (${sg.nestedParts.length} parts)`);
+}
+
+// Reject/skip a yard stock suggestion
+function rejectYardStock(suggId) {
+  let sg = (window._yardStockSuggestions || []).find(s => s.id === suggId);
+  if (!sg) return;
+  sg.rejected = true;
+
+  let card = document.getElementById(`ys-card-${suggId}`);
+  if (card) card.classList.add('rejected');
+}
+
+// Update the confirm button to reflect yard stock additions
+function updateYardStockConfirmCount() {
+  let confirmBtn = document.getElementById('btn-confirm-selected');
+  if (!confirmBtn) return;
+  let yardCount = (window._yardStockApprovals || []).length;
+  if (yardCount > 0) {
+    let existingText = confirmBtn.textContent;
+    // Append yard stock count
+    let baseMatch = existingText.match(/Confirm Selected \((\d+)\)/);
+    if (baseMatch) {
+      confirmBtn.textContent = `✅ Confirm Selected (${baseMatch[1]}) + ${yardCount} yard transfer${yardCount !== 1 ? 's' : ''}`;
+    }
+  }
 }
 
 function getSizeKeyGroups(parts) {
@@ -1712,7 +2250,7 @@ function renderAutoNest(el) {
         <div class="card-body" style="text-align:center;padding:32px">
           <div style="font-size:48px;margin-bottom:12px">✅</div>
           <h3 style="margin-bottom:8px">${info.totalLinked || 0} parts linked across ${cp.length} stick${cp.length !== 1 ? 's' : ''}${job ? ' — Job ' + escHtml(job) : ''}</h3>
-          <p class="text-muted" style="margin-bottom:16px">${info.totalRemnants > 0 ? info.totalRemnants + ' remnant(s) created' : 'No remnants created'}</p>
+          <p class="text-muted" style="margin-bottom:16px">${info.totalRemnants > 0 ? info.totalRemnants + ' remnant(s) created' : 'No remnants created'}${info.totalYardTransfers > 0 ? ' · ' + info.totalYardTransfers + ' yard stock transfer(s)' : ''}</p>
           <button class="btn btn-primary btn-lg" onclick="printCutSheets(window._lastConfirmedPieces)">🖨️ Print Cut Sheets (${cp.length})</button>
           <button class="btn btn-lg" onclick="navigateTo('cutqueue')" style="margin-left:8px">📄 View Cut Queue</button>
           <br><br>
@@ -2150,6 +2688,24 @@ async function executeAutoNest() {
 
   // Stash results for confirm
   window._autoNestResults = allResults;
+
+  // Clear any previous yard stock state
+  window._yardStockSuggestions = null;
+  window._yardStockApprovals = [];
+
+  // Show "Check Yard Stock" button if there are unnested parts and a specific job is selected
+  if (selectedJob) {
+    let nestedPartIds = new Set();
+    for (let r of allResults) {
+      for (let sp of r.result.usedStock) {
+        for (let p of sp.parts) nestedPartIds.add(p.id);
+      }
+    }
+    let stillUnnested = unmatched.filter(p => !nestedPartIds.has(p.id));
+    if (stillUnnested.length > 0) {
+      renderYardStockButton(stillUnnested);
+    }
+  }
 }
 
 function switchNestTab(tab) {
@@ -2582,6 +3138,134 @@ async function confirmAutoNest() {
     }
   }
 
+  // ===========================
+  // YARD STOCK TRANSFERS
+  // ===========================
+  let yardApprovals = window._yardStockApprovals || [];
+  let totalYardTransfers = 0;
+  let yardConfirmedPieces = [];
+
+  for (let sg of yardApprovals) {
+    try {
+      let beam = sg.beam;
+      let parts = sg.nestedParts;
+
+      // Build saw instructions — standard format, no prefix needed
+      let sawParts = parts.map(p => `CF:${inchesToShortFeet(p.cutInches)}`);
+      let sawInstruction = sawParts.join(' ');
+      if (sg.remainingInches >= SETTINGS.minRemnant) {
+        sawInstruction += ` | DROP:${inchesToDisplay(sg.remainingInches)} -> SAVE REMNANT`;
+      } else if (sg.remainingInches > 1) {
+        sawInstruction += ` | DROP:${inchesToDisplay(sg.remainingInches)} -> SCRAP`;
+      }
+
+      // Get the receiving job record ID
+      // We need the record ID for the job we're nesting for (selectedJob is the job number)
+      let receivingJobRecordId = null;
+      // Find a part from this job that has a known job record ID via its raw data
+      let jobPart = DATA.parts.find(p => p.job === (window._nestJobFilter || ''));
+      if (jobPart && jobPart._raw && jobPart._raw.fields['Job Number']) {
+        // Job Number on parts is a lookup — the linked record ID is what we need
+        // But parts don't directly have the Job record ID in our loaded data.
+        // We can get it from any stock beam that's already linked to this job.
+        let jobBeam = DATA.stock.find(s => {
+          if (s.jobLink.length === 0) return false;
+          if (s.assignedParts && s.assignedParts.length > 0) {
+            let pid = typeof s.assignedParts[0] === 'object' ? s.assignedParts[0].id : s.assignedParts[0];
+            let p = DATA.parts.find(pp => pp.id === pid);
+            return p && p.job === (window._nestJobFilter || '');
+          }
+          return false;
+        });
+        if (jobBeam) receivingJobRecordId = jobBeam.jobLink[0];
+      }
+
+      // PATCH Stock Material: update Job, set Donor Job, Transfer Price, Saw Instructions
+      let stockUpdate = {
+        'Saw Instructions': sawInstruction
+      };
+      if (receivingJobRecordId) {
+        stockUpdate['Job'] = [receivingJobRecordId];
+      }
+      if (sg.sourceJobRecordId) {
+        stockUpdate['Donor Job'] = [sg.sourceJobRecordId];
+      }
+      if (beam.unitCost || beam.totalCost) {
+        stockUpdate['Transfer Price'] = beam.totalCost || beam.unitCost || 0;
+      }
+
+      await airtableUpdate('Stock Material', beam.id, stockUpdate);
+
+      // PATCH Parts: link each to this stock beam
+      for (let p of parts) {
+        if (p.id) {
+          await airtableUpdate('Parts', p.id, {
+            'Stock Material': [beam.id]
+          });
+        }
+      }
+      totalLinked += parts.length;
+
+      // Create remnant if needed
+      if (sg.remainingInches >= SETTINGS.minRemnant) {
+        await airtableCreate('Remnants', {
+          'Material Type': beam.materialType,
+          'Material Size': beam.materialSize,
+          'Length (ft)': Math.round(sg.remainingInches / 12 * 10) / 10,
+          'Status': 'Available',
+          'Notes': `yard-transfer:${beam.id}`
+        });
+        totalRemnants++;
+      }
+
+      // CREATE Change Orders record (MT type) — if table exists
+      try {
+        let coFields = {
+          'CO Number': `MT-${sg.sourceJobNumber || '?'}-${window._nestJobFilter || '?'}-${beam.tag}`,
+          'Type': { name: 'MT' },
+          'Amount': beam.totalCost || beam.unitCost || 0,
+          'Date Submitted': new Date().toISOString().split('T')[0],
+          'Date Approved': new Date().toISOString().split('T')[0],
+          'Status': { name: 'Approved' },
+          'Description': `Material transfer: ${beam.tag} (${beam.sizeKey} × ${inchesToDisplay(beam.lengthInches)}) from Job ${sg.sourceJobNumber || '?'} to Job ${window._nestJobFilter || '?'}`,
+          'Notes': 'Transferred via Nesting Optimizer yard stock search'
+        };
+        // Link to receiving job if we have the record ID
+        if (receivingJobRecordId) {
+          coFields['Job'] = [receivingJobRecordId];
+        }
+        await airtableCreate('Change Orders', coFields);
+      } catch(coErr) {
+        console.warn('Could not create MT record in Change Orders:', coErr.message);
+        // Non-fatal — beam transfer still works without the CO record
+      }
+
+      totalYardTransfers++;
+
+      // Build a stock piece for print
+      let ysp = {
+        type: 'stock',
+        id: beam.tag,
+        totalLength: beam.lengthInches,
+        usable: beam.lengthInches - SETTINGS.endTrim,
+        record: beam,
+        parts: parts,
+        remaining: sg.remainingInches,
+        sizeKey: beam.sizeKey
+      };
+      parts.forEach(p => { p.cutDisplay = inchesToDisplay(p.cutInches); });
+      yardConfirmedPieces.push(ysp);
+
+      toast(`✅ ${beam.tag} transferred from Job ${sg.sourceJobNumber} → ${parts.length} part(s) linked`);
+    } catch(e) {
+      toast(`⚠️ Error on yard transfer ${sg.beam.tag}: ${e.message}`, 'error');
+    }
+  }
+
+  // Clean up yard stock state
+  window._yardStockApprovals = [];
+  window._yardStockSuggestions = null;
+
   // Store confirmed sticks for printing
   let confirmedPieces = [];
   for (let gi = 0; gi < results.length; gi++) {
@@ -2595,11 +3279,14 @@ async function confirmAutoNest() {
     }
   }
 
-  toast(`Done: ${totalLinked} parts linked, ${totalRemnants} remnants created`);
+  toast(`Done: ${totalLinked} parts linked, ${totalRemnants} remnants created${totalYardTransfers > 0 ? ', ' + totalYardTransfers + ' yard transfer(s)' : ''}`);
+
+  // Include yard stock confirmed pieces for printing
+  confirmedPieces.push(...yardConfirmedPieces);
 
   // Set flag so renderAutoNest shows success screen after loadData re-renders
   window._lastConfirmedPieces = confirmedPieces;
-  window._nestSuccessInfo = { totalLinked, totalRemnants };
+  window._nestSuccessInfo = { totalLinked, totalRemnants, totalYardTransfers };
   window._showNestSuccess = confirmedPieces.length > 0;
 
   await loadData();
