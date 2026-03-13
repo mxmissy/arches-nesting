@@ -1146,7 +1146,7 @@ async function loadData() {
   try {
     let [stockRaw, partsRaw, remnantsRaw, deliveriesRaw] = await Promise.all([
       airtableFetchAll('Stock Material', {
-        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery','PO Number','Vendor','Expected Delivery','Unit Cost','Total Cost','Job','Job Numbers']
+        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery','Deliveries','PO Number','Vendor','Expected Delivery','Unit Cost','Total Cost','Job','Job Numbers','Vendor Order Number']
       }),
       airtableFetchAll('Parts', {
         fields: ['Part ID','Size Key','Cut Length','Stock Material','Material Ordered','Job Number','Material Type','Material Size','Select for PO','Pending Delivery']
@@ -1172,8 +1172,13 @@ async function loadData() {
       materialSize: r.fields['Material Size'] || '',
       materialType: r.fields['Material Type'] || null,
       sawInstructions: r.fields['Saw Instructions'] || '',
-      delivery: Array.isArray(r.fields['Delivery']) ? r.fields['Delivery'] : (r.fields['Delivery'] ? [r.fields['Delivery']] : []),
+      delivery: (() => {
+        let d = r.fields['Delivery'] || r.fields['Deliveries'];
+        if (!d) return [];
+        return Array.isArray(d) ? d : [d];
+      })(),
       poNumber: r.fields['PO Number'] || '',
+      vendorOrderNumber: r.fields['Vendor Order Number'] || '',
       vendor: r.fields['Vendor'] ? (typeof r.fields['Vendor'] === 'object' ? r.fields['Vendor'].name : r.fields['Vendor']) : '',
       expectedDelivery: r.fields['Expected Delivery'] || '',
       unitCost: r.fields['Unit Cost'] || 0,
@@ -2042,16 +2047,23 @@ function renderBarDiagram(stockPiece) {
       tagLabel = rawStatus ? rawStatus.toUpperCase() : 'IN STOCK';
     }
 
-    // Build context line — PO, delivery, expected date
+    // Build context line — vendor, PO/order number, delivery, expected date
     if (sp.record) {
       let ctxParts = [];
-      if (sp.record.poNumber) ctxParts.push(`PO ${sp.record.poNumber}`);
+      // Show vendor name
+      if (sp.record.vendor) ctxParts.push(sp.record.vendor);
+      // Show PO or vendor order number
+      if (sp.record.poNumber) {
+        ctxParts.push(`PO ${sp.record.poNumber}`);
+      } else if (sp.record.vendorOrderNumber) {
+        ctxParts.push(`Order ${sp.record.vendorOrderNumber}`);
+      }
       if (hasDelivery) {
         // Resolve delivery display name if possible
         let delId = typeof sp.record.delivery[0] === 'object' ? sp.record.delivery[0].id : sp.record.delivery[0];
         let delRec = DATA.deliveries ? DATA.deliveries.find(d => d.id === delId) : null;
         if (delRec && delRec.display) {
-          ctxParts.push(delRec.display);
+          ctxParts.push(`📦 ${delRec.display}`);
         }
       }
       if (sp.record.expectedDelivery) {
@@ -5144,64 +5156,146 @@ function renderCutQueue(el) {
 
   window._cutQueuePieces = pieces;
   window._cutQueueSelected = new Set();
-  // Select all by default
-  pieces.forEach((_, i) => window._cutQueueSelected.add(i));
 
-  // Group by size key
-  let groups = {};
-  for (let i = 0; i < pieces.length; i++) {
-    let key = pieces[i].sizeKey;
-    if (!groups[key]) groups[key] = [];
-    groups[key].push(i);
-  }
-
-  let sizeKeys = Object.keys(groups).sort();
-  let sticksHtml = '';
-
-  for (let sk of sizeKeys) {
-    let indices = groups[sk];
-    sticksHtml += `<div class="cq-group">
-      <div class="cq-group-header">${escHtml(sk)} <span class="text-muted">(${indices.length} stick${indices.length !== 1 ? 's' : ''})</span></div>`;
-
-    for (let idx of indices) {
-      let sp = pieces[idx];
-      sticksHtml += `
-        <div class="nest-stick-row" style="margin-bottom:10px">
-          <label class="stick-select">
-            <input type="checkbox" class="cq-stick-chk" data-idx="${idx}" checked onchange="updateCqSelectionCount()">
-          </label>
-          <div class="stick-bar-wrap">
-            ${renderBarDiagram(sp)}
-            <div class="cq-saw-line"><span class="text-xs text-muted mono">${escHtml(sp.sawInstructions)}</span></div>
-          </div>
-        </div>`;
+  // Resolve job number for each piece from its linked parts
+  for (let sp of pieces) {
+    let jobs = new Set();
+    for (let p of sp.parts) {
+      let fullPart = DATA.parts.find(pp => pp.id === p.id);
+      if (fullPart && fullPart.job) jobs.add(fullPart.job);
     }
-    sticksHtml += '</div>';
+    // Also check stock record's jobNumber
+    if (sp.record && sp.record.jobNumber) {
+      for (let j of sp.record.jobNumber.split(',').map(x => x.trim()).filter(Boolean)) {
+        jobs.add(j);
+      }
+    }
+    sp._job = [...jobs].sort((a,b) => Number(a)-Number(b)).join(', ') || 'Unknown';
+    sp._primaryJob = [...jobs][0] || 'Unknown';
   }
+
+  // Group by primary job
+  let jobGroups = {};
+  for (let i = 0; i < pieces.length; i++) {
+    let job = pieces[i]._primaryJob;
+    if (!jobGroups[job]) jobGroups[job] = [];
+    jobGroups[job].push(i);
+  }
+
+  let jobKeys = Object.keys(jobGroups).sort((a,b) => Number(a)-Number(b));
+
+  let groupsHtml = jobKeys.map(job => {
+    let indices = jobGroups[job];
+    let stickCount = indices.length;
+    let partCount = indices.reduce((sum, idx) => sum + pieces[idx].parts.length, 0);
+
+    // Sub-group by size key within each job
+    let sizeGroups = {};
+    for (let idx of indices) {
+      let sk = pieces[idx].sizeKey;
+      if (!sizeGroups[sk]) sizeGroups[sk] = [];
+      sizeGroups[sk].push(idx);
+    }
+
+    let sizeKeys = Object.keys(sizeGroups).sort();
+    let sticksHtml = sizeKeys.map(sk => {
+      let skIndices = sizeGroups[sk];
+      let stickRows = skIndices.map(idx => {
+        let sp = pieces[idx];
+        return `
+          <div class="nest-stick-row" style="margin-bottom:10px">
+            <label class="stick-select">
+              <input type="checkbox" class="cq-stick-chk" data-idx="${idx}" onchange="updateCqSelectionCount()">
+            </label>
+            <div class="stick-bar-wrap">
+              ${renderBarDiagram(sp)}
+              <div class="cq-saw-line"><span class="text-xs text-muted mono">${escHtml(sp.sawInstructions)}</span></div>
+            </div>
+          </div>`;
+      }).join('');
+
+      return `<div class="cq-group">
+        <div class="cq-group-header">${escHtml(sk)} <span class="text-muted">(${skIndices.length} stick${skIndices.length !== 1 ? 's' : ''})</span></div>
+        ${stickRows}
+      </div>`;
+    }).join('');
+
+    return `
+      <div class="card" style="margin-bottom:12px">
+        <div class="card-header" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none" onclick="toggleCqJobGroup('${job}')">
+          <div style="display:flex;align-items:center;gap:10px">
+            <span id="cq-arrow-${job}" style="font-size:12px;transition:transform 0.2s;display:inline-block">▶</span>
+            <span style="font-size:17px;font-weight:700">Job ${escHtml(job)}</span>
+          </div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <span class="text-muted text-xs">${stickCount} beam${stickCount!==1?'s':''} · ${partCount} part${partCount!==1?'s':''}</span>
+            <button class="btn btn-sm" onclick="event.stopPropagation();selectCqJobGroup('${job}', true)" style="font-size:11px;padding:3px 8px">Select All</button>
+          </div>
+        </div>
+        <div id="cq-job-${job}" style="display:none">
+          <div class="card-body" style="padding-top:8px">
+            ${sticksHtml}
+          </div>
+        </div>
+      </div>`;
+  }).join('');
 
   el.innerHTML = `
-    <div class="card">
-      <div class="card-header flex-between">
-        📄 Confirmed Nestings — Ready to Print
-        <span class="text-muted text-xs">${pieces.length} stock piece(s) with saw instructions</span>
-      </div>
-      <div class="card-body">
-        ${sticksHtml}
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div>
+        <h3 style="font-size:16px;font-weight:700">📄 Cut Queue</h3>
+        <p class="text-muted text-xs" style="margin-top:2px">${pieces.length} stock piece(s) across ${jobKeys.length} job${jobKeys.length!==1?'s':''} — click a job to expand</p>
       </div>
     </div>
-    <div class="nest-confirm-bar">
-      <div class="nest-confirm-left">
-        <button class="btn btn-sm" onclick="toggleAllCqSticks(true)">Select All</button>
+    ${groupsHtml}
+    <div class="nest-confirm-bar" style="position:sticky;bottom:0;z-index:10;background:white;border-top:2px solid var(--clr-border);padding:12px 18px;display:flex;justify-content:space-between;align-items:center">
+      <div style="display:flex;align-items:center;gap:8px">
+        <button class="btn btn-sm" onclick="toggleAllCqSticks(true)">Select All Jobs</button>
         <button class="btn btn-sm" onclick="toggleAllCqSticks(false)">Clear All</button>
-        <span class="text-muted text-sm" id="cq-select-count">${pieces.length} of ${pieces.length} sticks selected</span>
+        <span class="text-muted text-sm" id="cq-select-count">0 of ${pieces.length} sticks selected</span>
       </div>
-      <button class="btn btn-primary" id="btn-cq-print" onclick="printSelectedCutQueue()">🖨️ Print Selected (${pieces.length})</button>
+      <button class="btn btn-primary" id="btn-cq-print" onclick="printSelectedCutQueue()" disabled>🖨️ Print Selected (0)</button>
     </div>`;
+}
+
+// Toggle a job group open/closed
+function toggleCqJobGroup(job) {
+  let body = document.getElementById(`cq-job-${job}`);
+  let arrow = document.getElementById(`cq-arrow-${job}`);
+  if (!body) return;
+  let isOpen = body.style.display !== 'none';
+  body.style.display = isOpen ? 'none' : 'block';
+  if (arrow) arrow.style.transform = isOpen ? 'rotate(0deg)' : 'rotate(90deg)';
+}
+
+// Select/deselect all sticks in a job group
+function selectCqJobGroup(job, checked) {
+  let pieces = window._cutQueuePieces || [];
+  // Find indices for this job
+  let body = document.getElementById(`cq-job-${job}`);
+  if (body) {
+    // Make sure group is open
+    body.style.display = 'block';
+    let arrow = document.getElementById(`cq-arrow-${job}`);
+    if (arrow) arrow.style.transform = 'rotate(90deg)';
+
+    body.querySelectorAll('.cq-stick-chk').forEach(cb => {
+      cb.checked = checked;
+    });
+  }
+  updateCqSelectionCount();
 }
 
 function toggleAllCqSticks(checked) {
   let pieces = window._cutQueuePieces || [];
   window._cutQueueSelected = checked ? new Set(pieces.map((_, i) => i)) : new Set();
+  // Open all groups if selecting all
+  document.querySelectorAll('[id^="cq-job-"]').forEach(el => {
+    el.style.display = checked ? 'block' : 'none';
+  });
+  document.querySelectorAll('[id^="cq-arrow-"]').forEach(el => {
+    el.style.transform = checked ? 'rotate(90deg)' : 'rotate(0deg)';
+  });
   document.querySelectorAll('.cq-stick-chk').forEach(cb => cb.checked = checked);
   updateCqSelectionCount();
 }
