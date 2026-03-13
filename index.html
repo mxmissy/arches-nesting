@@ -1142,7 +1142,7 @@ async function loadData() {
   try {
     let [stockRaw, partsRaw, remnantsRaw, deliveriesRaw] = await Promise.all([
       airtableFetchAll('Stock Material', {
-        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery','PO Number','Vendor','Expected Delivery','Unit Cost','Total Cost','Job']
+        fields: ['Stock Tag','Size Key','Length (ft)','Assigned Parts','Status','Material Size','Material Type','Saw Instructions','Delivery','PO Number','Vendor','Expected Delivery','Unit Cost','Total Cost','Job','Job Numbers']
       }),
       airtableFetchAll('Parts', {
         fields: ['Part ID','Size Key','Cut Length','Stock Material','Material Ordered','Job Number','Material Type','Material Size','Select for PO','Pending Delivery']
@@ -1175,6 +1175,12 @@ async function loadData() {
       unitCost: r.fields['Unit Cost'] || 0,
       totalCost: r.fields['Total Cost'] || 0,
       jobLink: Array.isArray(r.fields['Job']) ? r.fields['Job'] : (r.fields['Job'] ? [r.fields['Job']] : []),
+      jobNumber: (() => {
+        let j = r.fields['Job Numbers'];
+        if (!j) return '';
+        if (Array.isArray(j)) return j.map(v => typeof v==='object' ? String(v.name||'') : String(v)).join(',');
+        return String(j);
+      })(),
       _raw: r
     }));
 
@@ -1270,59 +1276,17 @@ async function loadYardStock(sizeKeys, excludeJob) {
   let normSK = s => (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
   let targetKeys = new Set(sizeKeys.map(normSK));
 
-  // Filter from already-loaded DATA.stock — no extra API call needed
-  // Beams must be: unassigned, physical (in yard), not current job, matching size
-  let candidates = DATA.stock.filter(s => {
-    if (!targetKeys.has(normSK(s.sizeKey))) return false;
-    if (s.assignedParts && s.assignedParts.length > 0) return false;
-    if (!['Ordered','Received','Label Printed','In Fabrication'].includes(s.status)) return false;
-    if (s.lengthInches <= 0) return false;
-    // Exclude beams already assigned to the current job
-    if (excludeJob) {
-      // Check if the beam's job matches the excluded job number
-      // jobLink is an array of record IDs — we need to resolve via parts' job numbers
-      // Simpler: check if any part on this beam belongs to excludeJob — but beam has no parts (unassigned)
-      // So we check the stock's job link by cross-referencing DATA.parts
-      // Actually, we need to figure out which job this beam belongs to.
-      // The stock record's jobLink has the record ID, but we need job number.
-      // Let's resolve job numbers from loaded data.
-    }
-    return true;
-  });
-
-  // Resolve job numbers for each candidate beam
-  // Build a map of job record ID → job number from parts data
-  let jobIdToNumber = {};
-  for (let p of DATA.parts) {
-    if (p._raw && p._raw.fields && p._raw.fields['Job Number']) {
-      // Job Number can be a lookup (array) or text
-      let jn = p.job; // already processed
-      // Get the job linked record ID if available
-      // Parts don't have job record ID directly, but Stock Material has Job link
-    }
-  }
-
-  // Better approach: for each stock beam, we know its jobLink (array of record IDs).
-  // We need to map those record IDs to job numbers.
-  // Build the map by scanning ALL stock that HAS assigned parts — those parts have job numbers.
-  // But for unassigned stock, the Job field on Stock Material is the direct link.
-  // We can resolve by checking: for beams with a Job link, find any part in that job.
+  // Build job record ID → job number map
   let jobRecIdToNumber = {};
-  for (let p of DATA.parts) {
-    if (p.job && p._raw && p._raw.fields['Stock Material']) {
-      let smIds = Array.isArray(p._raw.fields['Stock Material']) ? p._raw.fields['Stock Material'] : [];
-      for (let smId of smIds) {
-        let stk = DATA.stock.find(s => s.id === smId);
-        if (stk && stk.jobLink.length > 0) {
-          jobRecIdToNumber[stk.jobLink[0]] = p.job;
-        }
-      }
+  for (let s of DATA.stock) {
+    if (s.jobNumber && s.jobLink.length > 0) {
+      let firstJob = (s.jobNumber || '').split(',')[0].trim();
+      if (firstJob) jobRecIdToNumber[s.jobLink[0]] = firstJob;
     }
   }
-  // Also scan parts directly for job record ID mapping
-  // Since parts have job as text, and some stock has Job link, try to build from any stock with parts
+  // Fallback: resolve from assigned parts
   for (let s of DATA.stock) {
-    if (s.jobLink.length > 0 && s.assignedParts && s.assignedParts.length > 0) {
+    if (s.jobLink.length > 0 && !jobRecIdToNumber[s.jobLink[0]] && s.assignedParts && s.assignedParts.length > 0) {
       let partId = typeof s.assignedParts[0] === 'object' ? s.assignedParts[0].id : s.assignedParts[0];
       let part = DATA.parts.find(p => p.id === partId);
       if (part && part.job) {
@@ -1331,17 +1295,21 @@ async function loadYardStock(sizeKeys, excludeJob) {
     }
   }
 
-  // Now filter out beams belonging to the excluded job and annotate with source job
-  candidates = candidates.filter(s => {
-    if (s.jobLink.length > 0) {
-      let jobNum = jobRecIdToNumber[s.jobLink[0]] || '';
-      s._sourceJobNumber = jobNum;
-      s._sourceJobRecordId = s.jobLink[0];
-      return jobNum !== excludeJob;
-    }
-    // Beams with no job link are unassigned yard stock — always available
-    s._sourceJobNumber = '';
-    s._sourceJobRecordId = '';
+  // Filter: unassigned, physical, matching size, not excluded job
+  let candidates = DATA.stock.filter(s => {
+    if (!targetKeys.has(normSK(s.sizeKey))) return false;
+    if (s.assignedParts && s.assignedParts.length > 0) return false;
+    if (!['Ordered','Received','Label Printed','In Fabrication'].includes(s.status)) return false;
+    if (s.lengthInches <= 0) return false;
+
+    // Resolve job number — may be comma-separated if beam linked to multiple jobs
+    let jobNums = (s.jobNumber || '').split(',').map(x => x.trim()).filter(Boolean);
+    s._sourceJobNumber = jobNums[0] || (s.jobLink.length > 0 ? jobRecIdToNumber[s.jobLink[0]] : '') || '';
+    s._sourceJobRecordId = s.jobLink.length > 0 ? s.jobLink[0] : '';
+
+    // Exclude beams on the current job
+    if (excludeJob && jobNums.includes(excludeJob)) return false;
+
     return true;
   });
 
@@ -1483,6 +1451,18 @@ async function onCheckYardStock() {
 
   try {
     let yardStock = await loadYardStock(sizeKeys, selectedJob);
+
+    // CRITICAL: Exclude beams already used in Phase 1 nesting (provisional, not yet confirmed)
+    let phase1StockIds = new Set();
+    if (window._autoNestResults) {
+      for (let r of window._autoNestResults) {
+        for (let sp of r.result.usedStock) {
+          if (sp.record && sp.record.id) phase1StockIds.add(sp.record.id);
+        }
+      }
+    }
+    yardStock = yardStock.filter(s => !phase1StockIds.has(s.id));
+
     let suggestions = runYardStockOptimizer(unnested, yardStock);
 
     window._yardStockSuggestions = suggestions;
@@ -2137,6 +2117,70 @@ function renderDashboard(el) {
       remnants.some(r => normSK(r.materialSize) === normSK(sk))
     );
 
+    // ---- Stock health: find all stock beams belonging to this job ----
+    // Use jobNumber field directly if available, fallback to record ID mapping
+    let jobRecordIds = new Set();
+    let stockJobMatch = s => {
+      let nums = (s.jobNumber || '').split(',').map(x => x.trim());
+      return nums.includes(job);
+    };
+    for (let s of DATA.stock) {
+      if (stockJobMatch(s) && s.jobLink && s.jobLink.length > 0) {
+        jobRecordIds.add(s.jobLink[0]);
+      }
+    }
+    // Fallback: resolve from assigned parts for beams without jobNumber
+    if (jobRecordIds.size === 0) {
+      for (let s of DATA.stock) {
+        if (s.jobLink && s.jobLink.length > 0 && s.assignedParts && s.assignedParts.length > 0) {
+          let pid = typeof s.assignedParts[0] === 'object' ? s.assignedParts[0].id : s.assignedParts[0];
+          let part = DATA.parts.find(pp => pp.id === pid);
+          if (part && part.job === job) jobRecordIds.add(s.jobLink[0]);
+        }
+      }
+    }
+
+    let jobStock = DATA.stock.filter(s =>
+      stockJobMatch(s) ||
+      (s.jobLink && s.jobLink.length > 0 && jobRecordIds.has(s.jobLink[0]))
+    );
+    let stockInUse = jobStock.filter(s => s.assignedParts && s.assignedParts.length > 0);
+    let stockUnassigned = jobStock.filter(s => !s.assignedParts || s.assignedParts.length === 0);
+
+    // Surplus = unassigned beams whose size doesn't match any remaining needed parts
+    let neededSKs = new Set(sizesNeeded.map(normSK));
+    let surplusBeams = stockUnassigned.filter(s => !neededSKs.has(normSK(s.sizeKey)));
+    let matchingUnassigned = stockUnassigned.filter(s => neededSKs.has(normSK(s.sizeKey)));
+
+    // Surplus size breakdown
+    let surplusBySize = {};
+    for (let s of surplusBeams) {
+      let sk = s.sizeKey || 'UNKNOWN';
+      if (!surplusBySize[sk]) surplusBySize[sk] = { count: 0, value: 0 };
+      surplusBySize[sk].count++;
+      surplusBySize[sk].value += (s.totalCost || s.unitCost || 0);
+    }
+    let totalSurplusValue = surplusBeams.reduce((sum, s) => sum + (s.totalCost || s.unitCost || 0), 0);
+
+    let surplusSizeChips = Object.entries(surplusBySize)
+      .sort((a,b) => b[1].count - a[1].count)
+      .map(([sk, info]) => `<span style="background:#F0FDFA;border:1px solid #99F6E4;padding:1px 6px;border-radius:3px;font-size:11px;display:inline-block;margin:1px"><strong>${escHtml(sk)}</strong>: ${info.count}</span>`)
+      .join(' ');
+
+    // Stock health line
+    let stockHealthHtml = '';
+    if (jobStock.length > 0) {
+      let surplusValueStr = totalSurplusValue > 0 ? ` · <span style="color:#0D9488;font-weight:600">$${totalSurplusValue.toLocaleString('en-US', {minimumFractionDigits:0, maximumFractionDigits:0})} idle</span>` : '';
+      stockHealthHtml = `
+        <div style="margin-top:10px;padding:10px 12px;background:#F9FAFB;border:1px solid #E5E7EB;border-radius:6px;font-size:13px">
+          <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center">
+            <span>📦 <strong>${stockInUse.length}</strong> / ${jobStock.length} beams in use</span>
+            ${stockUnassigned.length > 0 ? `<span style="color:#6B7280">·  ${matchingUnassigned.length > 0 ? `<span style="color:#2563EB">${matchingUnassigned.length} ready to nest</span>` : ''}${matchingUnassigned.length > 0 && surplusBeams.length > 0 ? ' · ' : ''}${surplusBeams.length > 0 ? `<span style="color:#0D9488">${surplusBeams.length} surplus</span>${surplusValueStr}` : ''}</span>` : ''}
+          </div>
+          ${surplusBeams.length > 0 ? `<div style="margin-top:6px;line-height:1.8">${surplusSizeChips}</div>` : ''}
+        </div>`;
+    }
+
     let statusLabel, statusColor, statusBg;
     if (needed.length === 0) {
       statusLabel = '✅ All Assigned'; statusColor = '#16A34A'; statusBg = '#F0FDF4';
@@ -2163,9 +2207,9 @@ function renderDashboard(el) {
     }).join('');
 
     let nestBtn = needed.length > 0 && sizesWithStock.length > 0
-      ? `<button class="btn btn-primary btn-sm" onclick="nestJob('${job}')" style="margin-top:12px">🪚 Nest Job ${job}</button>`
+      ? `<button class="btn btn-primary btn-sm" onclick="nestJob('${job}')">🪚 Nest Job ${job}</button>`
       : needed.length > 0
-        ? `<button class="btn btn-sm" disabled style="margin-top:12px;opacity:0.5">No Stock Available</button>`
+        ? `<button class="btn btn-sm" disabled style="opacity:0.5">No Stock Available</button>`
         : '';
 
     return `<div class="card" style="margin-bottom:16px">
@@ -2198,7 +2242,11 @@ function renderDashboard(el) {
             <tbody>${sizeRows}</tbody>
           </table>
         </details>` : ''}
-        ${nestBtn}
+        ${stockHealthHtml}
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
+          ${nestBtn}
+          ${needed.length > 0 ? `<button class="btn btn-sm" onclick="nestJob('${job}')" style="background:#0D9488;color:white;border:none" title="Run nesting then check yard stock for beams from other jobs">🏗️ Check Yard Stock</button>` : ''}
+        </div>
       </div>
     </div>`;
   }).join('');
