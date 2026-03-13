@@ -870,6 +870,90 @@ body {
   color: #6B7280;
   font-size: 14px;
 }
+
+/* ============================================================
+   CROSS-JOB FILL — Orange color scheme
+   ============================================================ */
+.xf-btn {
+  background: #F97316;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 6px;
+}
+.xf-btn:hover { background: #EA580C; }
+.xf-panel {
+  margin-top: 8px;
+  border: 1px solid #FED7AA;
+  border-radius: 6px;
+  background: #FFF7ED;
+  padding: 10px 12px;
+}
+.xf-part-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+  padding: 3px 0;
+}
+.xf-part-row input[type="checkbox"] { margin: 0; }
+.xf-job-chip {
+  background: #F97316;
+  color: white;
+  border-radius: 10px;
+  padding: 1px 7px;
+  font-size: 11px;
+  font-weight: 700;
+}
+.xf-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+.xf-btn-approve {
+  background: #16A34A;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.xf-btn-cancel {
+  background: #E5E7EB;
+  color: #374151;
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.bar-segment.cross-fill {
+  background: repeating-linear-gradient(
+    45deg, #F97316, #F97316 4px, #FED7AA 4px, #FED7AA 8px
+  );
+  position: relative;
+  color: white;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.4);
+}
+.seg-job-badge {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  background: rgba(0,0,0,0.45);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 700;
+  border-radius: 3px;
+  padding: 0 3px;
+  line-height: 14px;
+  pointer-events: none;
+}
 </style>
 </head>
 
@@ -1650,6 +1734,136 @@ function updateYardStockConfirmCount() {
   }
 }
 
+// ============================================================
+// CROSS-JOB FILL — Fill remnant space with other jobs' parts
+// ============================================================
+
+function checkBeamCrossFill(groupIdx, stickIdx) {
+  let results = window._autoNestResults;
+  if (!results || !results[groupIdx]) return;
+  let sp = results[groupIdx].result.usedStock[stickIdx];
+  if (!sp) return;
+
+  let selectedJob = window._nestJobFilter || '';
+  let remainingInches = sp.remaining;
+  if (remainingInches < 12) { toast('Not enough space for cross-fill', 'warning'); return; }
+
+  let normSK = s => (s||'').toUpperCase().replace(/[^A-Z0-9./]/g,'');
+  let beamSizeKey = normSK(results[groupIdx].sizeKey);
+
+  // Find unmatched parts from OTHER jobs matching this size
+  let allUnmatched = getUnmatchedParts();
+  let candidates = allUnmatched.filter(p => {
+    if (selectedJob && p.job === selectedJob) return false;
+    if (!p.job) return false;
+    if (normSK(p.sizeKey) !== beamSizeKey) return false;
+    if (p.cutInches + SETTINGS.kerf > remainingInches) return false;
+    return true;
+  });
+
+  // Exclude parts already in cross-fills on any beam
+  let usedCrossIds = new Set();
+  for (let r of results) {
+    for (let s of r.result.usedStock) {
+      if (s.crossFills) for (let cf of s.crossFills) usedCrossIds.add(cf.id);
+    }
+  }
+  candidates = candidates.filter(p => !usedCrossIds.has(p.id));
+
+  let panelId = `xf-panel-${groupIdx}-${stickIdx}`;
+  let existing = document.getElementById(panelId);
+  if (existing) existing.remove();
+
+  if (candidates.length === 0) {
+    let stickRow = document.querySelector(`[data-stick-id="nest-${groupIdx}-${stickIdx}"]`);
+    if (stickRow) stickRow.insertAdjacentHTML('afterend', `<div id="${panelId}" class="xf-panel" style="margin-left:32px"><div style="font-size:13px;color:#6B7280">No parts from other jobs fit the remaining ${inchesToDisplay(remainingInches)}.</div></div>`);
+    return;
+  }
+
+  let bestIndices = knapsackBestSubset(
+    candidates.map(p => ({ cutInches: p.cutInches + SETTINGS.kerf, partId: p.partId, id: p.id })),
+    remainingInches
+  );
+  if (bestIndices.length === 0) { toast('No combination fits', 'warning'); return; }
+  let bestParts = bestIndices.map(i => candidates[i]);
+
+  if (!window._crossFillCandidates) window._crossFillCandidates = {};
+  window._crossFillCandidates[`${groupIdx}-${stickIdx}`] = { parts: bestParts, checked: new Set(bestParts.map(p => p.id)) };
+
+  let partsHtml = bestParts.map(p => `<div class="xf-part-row">
+    <input type="checkbox" checked onchange="xfTogglePart(${groupIdx},${stickIdx},'${p.id}')">
+    <span class="xf-job-chip">J${escHtml(p.job)}</span>
+    <span class="mono" style="font-weight:600">${escHtml(p.partId)}</span>
+    <span class="mono" style="font-size:12px">${inchesToDisplay(p.cutInches)}</span>
+  </div>`).join('');
+
+  let usedByChecked = bestParts.reduce((sum, p) => sum + p.cutInches + SETTINGS.kerf, 0);
+  let afterFill = remainingInches - usedByChecked;
+
+  let stickRow = document.querySelector(`[data-stick-id="nest-${groupIdx}-${stickIdx}"]`);
+  if (stickRow) stickRow.insertAdjacentHTML('afterend', `
+    <div id="${panelId}" class="xf-panel" style="margin-left:32px">
+      <div style="font-size:13px;font-weight:600;color:#F97316;margin-bottom:6px">🔀 Cross-Job Fill — ${bestParts.length} part${bestParts.length!==1?'s':''} from other jobs</div>
+      ${partsHtml}
+      <div style="font-size:12px;color:#6B7280;margin-top:6px">Space after fill: ${inchesToDisplay(Math.max(0, afterFill))} ${afterFill >= SETTINGS.minRemnant ? '→ REMNANT' : afterFill > 1 ? '→ SCRAP' : ''}</div>
+      <div class="xf-actions">
+        <button class="xf-btn-approve" onclick="approveBeamCrossFill(${groupIdx},${stickIdx})">✅ Add checked parts</button>
+        <button class="xf-btn-cancel" onclick="cancelBeamCrossFill(${groupIdx},${stickIdx})">✗ Cancel</button>
+      </div>
+    </div>`);
+}
+
+function xfTogglePart(groupIdx, stickIdx, partId) {
+  let data = window._crossFillCandidates && window._crossFillCandidates[`${groupIdx}-${stickIdx}`];
+  if (!data) return;
+  if (data.checked.has(partId)) data.checked.delete(partId);
+  else data.checked.add(partId);
+}
+
+function approveBeamCrossFill(groupIdx, stickIdx) {
+  let key = `${groupIdx}-${stickIdx}`;
+  let data = window._crossFillCandidates && window._crossFillCandidates[key];
+  if (!data) return;
+  let results = window._autoNestResults;
+  let sp = results[groupIdx].result.usedStock[stickIdx];
+  if (!sp) return;
+
+  let approvedParts = data.parts.filter(p => data.checked.has(p.id));
+  if (approvedParts.length === 0) { toast('No parts checked', 'warning'); return; }
+
+  if (!sp.crossFills) sp.crossFills = [];
+  for (let p of approvedParts) {
+    sp.crossFills.push({ id: p.id, partId: p.partId, cutInches: p.cutInches, job: p.job, sizeKey: p.sizeKey });
+    sp.remaining -= (p.cutInches + SETTINGS.kerf);
+  }
+  if (sp.remaining < 0) sp.remaining = 0;
+
+  // Remove panel, re-render bar
+  let panel = document.getElementById(`xf-panel-${groupIdx}-${stickIdx}`);
+  if (panel) panel.remove();
+
+  let stickRow = document.querySelector(`[data-stick-id="nest-${groupIdx}-${stickIdx}"]`);
+  if (stickRow) {
+    let barWrap = stickRow.querySelector('.stick-bar-wrap');
+    if (barWrap) {
+      barWrap.innerHTML = renderBarDiagram(sp);
+      barWrap.insertAdjacentHTML('beforeend', `<div style="font-size:12px;color:#F97316;font-weight:600;margin-top:4px">🔀 ${approvedParts.length} cross-fill part${approvedParts.length!==1?'s':''} added (${approvedParts.map(p => p.partId + ' J' + p.job).join(', ')})</div>`);
+    }
+    if (sp.remaining >= 12) {
+      stickRow.insertAdjacentHTML('afterend', `<div style="margin-left:32px;margin-top:4px"><button class="xf-btn" onclick="checkBeamCrossFill(${groupIdx},${stickIdx})">🔀 Check again (${inchesToDisplay(sp.remaining)} left)</button></div>`);
+    }
+  }
+
+  delete window._crossFillCandidates[key];
+  toast(`✅ ${approvedParts.length} cross-fill part(s) added`);
+}
+
+function cancelBeamCrossFill(groupIdx, stickIdx) {
+  let panel = document.getElementById(`xf-panel-${groupIdx}-${stickIdx}`);
+  if (panel) panel.remove();
+  if (window._crossFillCandidates) delete window._crossFillCandidates[`${groupIdx}-${stickIdx}`];
+}
+
 function getSizeKeyGroups(parts) {
   let groups = {};
   for (let p of parts) {
@@ -2003,6 +2217,20 @@ function renderBarDiagram(stockPiece) {
     // Kerf
     let kerfPct = (SETTINGS.kerf / total * 100).toFixed(2);
     if (kerfPct > 0) segments.push(`<div class="bar-segment kerf-seg" style="width:${kerfPct}%"></div>`);
+  }
+
+  // Cross-fill segments (from other jobs)
+  if (sp.crossFills && sp.crossFills.length > 0) {
+    for (let cf of sp.crossFills) {
+      let pct = (cf.cutInches / total * 100).toFixed(2);
+      segments.push(`<div class="bar-segment cross-fill" style="width:${pct}%" title="CF: ${escHtml(cf.partId)} (J${escHtml(cf.job)}): ${inchesToDisplay(cf.cutInches)}">
+        <span class="seg-job-badge">J${escHtml(cf.job)}</span>
+        <span class="seg-id">${escHtml(cf.partId)}</span>
+        <span class="seg-dim">${inchesToDisplay(cf.cutInches)}</span>
+      </div>`);
+      let kerfPct = (SETTINGS.kerf / total * 100).toFixed(2);
+      if (kerfPct > 0) segments.push(`<div class="bar-segment kerf-seg" style="width:${kerfPct}%"></div>`);
+    }
   }
 
   let drop = sp.remaining;
@@ -2796,12 +3024,17 @@ async function executeAutoNest() {
     for (let si = 0; si < result.usedStock.length; si++) {
       let sp = result.usedStock[si];
       let stickId = `nest-${groupIdx}-${si}`;
+      // Cross-fill button if beam has remnant space and a specific job is selected
+      let xfBtn = '';
+      if (selectedJob && sp.remaining >= SETTINGS.minRemnant) {
+        xfBtn = `<button class="xf-btn" onclick="checkBeamCrossFill(${groupIdx},${si})">🔀 Check cross-fill (${inchesToDisplay(sp.remaining)} available)</button>`;
+      }
       barsHtml += `
         <div class="nest-stick-row" data-stick-id="${stickId}">
           <label class="stick-select" title="Select this stick for confirmation">
             <input type="checkbox" class="nest-stick-chk" data-group="${groupIdx}" data-stick="${si}" checked onchange="updateNestSelectionCount()">
           </label>
-          <div class="stick-bar-wrap">${renderBarDiagram(sp)}</div>
+          <div class="stick-bar-wrap">${renderBarDiagram(sp)}${xfBtn ? `<div style="margin-top:4px">${xfBtn}</div>` : ''}</div>
         </div>`;
     }
 
@@ -2837,6 +3070,7 @@ async function executeAutoNest() {
           </div>` : ''}
           <div class="legend">
             <div class="legend-item"><div class="legend-swatch" style="background:var(--clr-part)"></div>Part</div>
+            <div class="legend-item"><div class="legend-swatch" style="background:repeating-linear-gradient(45deg, #F97316, #F97316 3px, #FED7AA 3px, #FED7AA 6px)"></div>Cross-fill (other job)</div>
             <div class="legend-item"><div class="legend-swatch" style="background:var(--clr-remnant)"></div>Remnant (saved)</div>
             <div class="legend-item"><div class="legend-swatch" style="background:var(--clr-scrap)"></div>Scrap (waste)</div>
           </div>
@@ -3011,9 +3245,10 @@ async function executeAutoNest() {
   // Stash results for confirm
   window._autoNestResults = allResults;
 
-  // Clear any previous yard stock state
+  // Clear any previous yard stock and cross-fill state
   window._yardStockSuggestions = null;
   window._yardStockApprovals = [];
+  window._crossFillCandidates = {};
 
   // Show "Check Yard Stock" button if there are unnested parts and a specific job is selected
   if (selectedJob) {
@@ -3466,8 +3701,14 @@ async function confirmAutoNest() {
       let sp = result.usedStock[si];
       try {
         let dropInches = sp.remaining;
-        // Build saw instructions
+        // Build saw instructions — primary parts
         let sawParts = sp.parts.map(p => `CF:${inchesToShortFeet(p.cutInches)}`);
+        // Add cross-fill parts with job badge
+        if (sp.crossFills && sp.crossFills.length > 0) {
+          for (let cf of sp.crossFills) {
+            sawParts.push(`CF:${inchesToShortFeet(cf.cutInches)}(J${cf.job})`);
+          }
+        }
         let sawInstruction = sawParts.join(' ');
         if (dropInches >= SETTINGS.minRemnant) {
           sawInstruction += ` | DROP:${inchesToDisplay(dropInches)} -> SAVE REMNANT`;
@@ -3476,13 +3717,24 @@ async function confirmAutoNest() {
         }
 
         if (sp.type === 'stock') {
-          // Link each part to this stock record (from Parts side)
+          // Link each primary part to this stock record
           for (let p of sp.parts) {
             if (p.id) {
               await airtableUpdate('Parts', p.id, {
                 'Stock Material': [sp.record.id]
               });
             }
+          }
+          // Link cross-fill parts to the same stock record
+          if (sp.crossFills && sp.crossFills.length > 0) {
+            for (let cf of sp.crossFills) {
+              if (cf.id) {
+                await airtableUpdate('Parts', cf.id, {
+                  'Stock Material': [sp.record.id]
+                });
+              }
+            }
+            totalLinked += sp.crossFills.length;
           }
           // Update saw instructions on stock
           await airtableUpdate('Stock Material', sp.record.id, {
@@ -3510,13 +3762,24 @@ async function confirmAutoNest() {
             'Length (ft)': sp.record.lengthFt,
             'Saw Instructions': sawInstruction
           });
-          // Link each part to the new stock record (from Parts side)
+          // Link each primary part to the new stock record
           for (let p of sp.parts) {
             if (p.id) {
               await airtableUpdate('Parts', p.id, {
                 'Stock Material': [newStock.id]
               });
             }
+          }
+          // Link cross-fill parts to the same stock record
+          if (sp.crossFills && sp.crossFills.length > 0) {
+            for (let cf of sp.crossFills) {
+              if (cf.id) {
+                await airtableUpdate('Parts', cf.id, {
+                  'Stock Material': [newStock.id]
+                });
+              }
+            }
+            totalLinked += sp.crossFills.length;
           }
           // Mark remnant as Used
           await airtableUpdate('Remnants', sp.record.id, { 'Status': 'Used' });
@@ -3534,7 +3797,8 @@ async function confirmAutoNest() {
           }
         }
 
-        toast(`✅ ${sp.id} → ${sp.parts.length} part(s) linked`);
+        let xfCount = (sp.crossFills && sp.crossFills.length) || 0;
+        toast(`✅ ${sp.id} → ${sp.parts.length} part(s) linked${xfCount > 0 ? ' + ' + xfCount + ' cross-fill' : ''}`);
       } catch(e) {
         toast(`⚠️ Error on ${sp.id}: ${e.message}`, 'error');
       }
